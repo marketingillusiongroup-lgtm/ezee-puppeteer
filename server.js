@@ -150,45 +150,30 @@ async function scrapeEzee(queryType = 'general') {
       
       await page.waitForTimeout(3000); // Dar tiempo extra para que cargue todo
       
-      console.log('📊 Extracting reservation data...');
-      const reservations = await page.evaluate(() => {
-        // Buscar tarjetas de Material-UI
-        const cards = Array.from(document.querySelectorAll('.MuiCard-root, .MuiPaper-root'));
+      console.log('📊 Extracting page content...');
+      
+      // Extraer el contenido completo de la página para que la IA lo procese
+      const pageData = await page.evaluate(() => {
+        // Obtener el contenedor principal
+        const mainContent = document.querySelector('main, #root, .MuiContainer-root') || document.body;
         
-        return cards.map(card => {
-          // Función auxiliar para extraer texto
-          const getText = (selector) => {
-            const el = card.querySelector(selector);
-            return el ? el.textContent.trim() : '';
-          };
-          
-          // Extraer todos los textos de la tarjeta
-          const allText = card.textContent;
-          
-          // Buscar patrones
-          const guestNameMatch = allText.match(/([A-Z][a-z]+\.?\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)/);
-          const datesMatch = allText.match(/(\d{2}\/\d{2}\/\d{4})/g);
-          const nightsMatch = allText.match(/(\d+)\s*Nights?/i);
-          const amountMatch = allText.match(/Me\$\s*([\d,]+\.?\d*)/g);
-          const roomMatch = allText.match(/S\s*(\d+)\s*\/\s*([^\/\n]+)/);
-          
-          return {
-            guestName: guestNameMatch ? guestNameMatch[1] : getText('h6, .MuiTypography-h6'),
-            bookingId: getText('.MuiTypography-body2'),
-            checkIn: datesMatch ? datesMatch[0] : '',
-            checkOut: datesMatch ? datesMatch[1] : '',
-            nights: nightsMatch ? nightsMatch[1] : getText('.MuiTypography-h4'),
-            roomType: roomMatch ? roomMatch[2]?.trim() : '',
-            total: amountMatch ? amountMatch[0]?.replace('Me$', '').trim() : '',
-            paid: amountMatch ? amountMatch[1]?.replace('Me$', '').trim() : '',
-            balance: amountMatch ? amountMatch[2]?.replace('Me$', '').trim() : '',
-            rawText: allText.substring(0, 300) // Para debug
-          };
-        }).filter(res => res.guestName || res.checkIn); // Solo reservas válidas
+        // Extraer texto limpio
+        const textContent = mainContent.textContent.replace(/\s+/g, ' ').trim();
+        
+        // Contar elementos que parecen reservas
+        const cards = document.querySelectorAll('.MuiCard-root, .MuiPaper-root, [class*="card"]');
+        
+        return {
+          html: mainContent.innerHTML.substring(0, 50000), // Limitar tamaño
+          text: textContent.substring(0, 10000), // Texto limpio
+          cardCount: cards.length,
+          url: window.location.href,
+          title: document.title
+        };
       });
       
-      console.log(`✅ Found ${reservations.length} reservations`);
-      data.reservations = reservations;
+      console.log(`✅ Extracted page data (${pageData.cardCount} cards found)`);
+      data.reservations = pageData;
     }
     
     // Extraer disponibilidad
