@@ -8,10 +8,18 @@ app.use(express.urlencoded({ extended: true }));
 
 // Configuración
 const PORT = process.env.PORT || 3000;
+
+// Validar que las credenciales estén configuradas
+if (!process.env.EZEE_USERNAME || !process.env.EZEE_PASSWORD || !process.env.EZEE_PROPERTY_CODE) {
+  console.error('❌ ERROR: Missing eZee credentials in environment variables');
+  console.error('Please set: EZEE_USERNAME, EZEE_PASSWORD, EZEE_PROPERTY_CODE');
+  process.exit(1);
+}
+
 const EZEE_CREDENTIALS = {
-  username: process.env.EZEE_USERNAME || 'j.robles',
-  password: process.env.EZEE_PASSWORD || '07102701JP?',
-  propertyCode: process.env.EZEE_PROPERTY_CODE || '44018'
+  username: process.env.EZEE_USERNAME,
+  password: process.env.EZEE_PASSWORD,
+  propertyCode: process.env.EZEE_PROPERTY_CODE
 };
 
 const EZEE_URLS = {
@@ -56,39 +64,25 @@ async function scrapeEzee(queryType = 'general') {
     console.log('📄 Loading login page...');
     await page.goto(EZEE_URLS.login, { waitUntil: 'networkidle2', timeout: 60000 });
     
-    // Esperar formulario - usar selectores más flexibles
+    // Esperar formulario - usar selectores exactos que funcionaron
     console.log('⏳ Waiting for login form...');
-    await page.waitForSelector('input[name="username"], input#username, input[placeholder*="Username"]', { timeout: 15000 });
+    await page.waitForSelector('input#username', { timeout: 15000 });
     
-    // Llenar formulario - intentar múltiples selectores
+    // Llenar formulario con selectores exactos
     console.log('✍️ Filling login form...');
-    const usernameSelector = await page.$('input[name="username"]') ? 'input[name="username"]' : 
-                            await page.$('input#username') ? 'input#username' : 
-                            'input[placeholder*="Username"]';
+    await page.type('input#username', EZEE_CREDENTIALS.username);
+    console.log('  ✅ Username filled');
     
-    const passwordSelector = await page.$('input[name="password"]') ? 'input[name="password"]' : 
-                            await page.$('input#password') ? 'input#password' : 
-                            'input[type="password"]';
+    await page.type('input#password', EZEE_CREDENTIALS.password);
+    console.log('  ✅ Password filled');
     
-    const hotelcodeSelector = await page.$('input[name="hotelcode"]') ? 'input[name="hotelcode"]' : 
-                             await page.$('input#hotelcode') ? 'input#hotelcode' : 
-                             'input[placeholder*="Property"]';
+    await page.type('input#hotelcode', EZEE_CREDENTIALS.propertyCode);
+    console.log('  ✅ Property code filled');
     
-    await page.type(usernameSelector, EZEE_CREDENTIALS.username);
-    await page.type(passwordSelector, EZEE_CREDENTIALS.password);
-    await page.type(hotelcodeSelector, EZEE_CREDENTIALS.propertyCode);
-    
-    // Login - buscar el botón SIGN IN
+    // Login - usar el selector exacto que funcionó
     console.log('🔑 Clicking SIGN IN...');
-    const signInButton = await page.$('button:contains("SIGN IN")') || 
-                        await page.$('button[type="submit"]') ||
-                        await page.$('#login');
-    
-    if (signInButton) {
-      await signInButton.click();
-    } else {
-      await page.keyboard.press('Enter');
-    }
+    await page.click('button#login');
+    console.log('✅ SIGN IN clicked');
     
     // Esperar navegación después del login
     console.log('⏳ Waiting for login to complete...');
@@ -98,22 +92,39 @@ async function scrapeEzee(queryType = 'general') {
     // PASO CRÍTICO: Hacer clic en "Property Management System"
     console.log('🏨 Looking for Property Management System button...');
     try {
-      await page.waitForSelector('button:contains("Property Management System"), a:contains("Property Management System")', { timeout: 10000 });
+      await page.waitForTimeout(3000); // Esperar a que cargue la página
       
-      const pmsButton = await page.$('button:contains("Property Management System")') || 
-                       await page.$('a:contains("Property Management System")');
+      // Buscar y hacer click usando evaluate (más confiable)
+      const pmsClicked = await page.evaluate(() => {
+        const buttons = Array.from(document.querySelectorAll('button'));
+        const pmsButton = buttons.find(btn => 
+          btn.textContent.trim() === 'Property Management System'
+        );
+        if (pmsButton) {
+          pmsButton.click();
+          return true;
+        }
+        return false;
+      });
       
-      if (pmsButton) {
-        console.log('✅ Found PMS button, clicking...');
-        await pmsButton.click();
+      if (pmsClicked) {
+        console.log('✅ PMS button clicked');
         await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {});
         await page.waitForTimeout(3000);
       } else {
         console.log('⚠️ PMS button not found, trying direct navigation...');
-        await page.goto('https://live.ipms247.com/frontoffice/dashboard', { waitUntil: 'networkidle2', timeout: 30000 });
+        await page.goto('https://live.ipms247.com/frontoffice/reservations', { 
+          waitUntil: 'networkidle2', 
+          timeout: 30000 
+        });
       }
     } catch (error) {
-      console.log('⚠️ Could not find PMS button, assuming already in PMS:', error.message);
+      console.log('⚠️ Error with PMS button:', error.message);
+      // Intentar navegación directa
+      await page.goto('https://live.ipms247.com/frontoffice/reservations', { 
+        waitUntil: 'networkidle2', 
+        timeout: 30000 
+      });
     }
     
     // Verificar que estamos logueados
