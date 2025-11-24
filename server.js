@@ -28,10 +28,9 @@ const EZEE_URLS = {
   availability: 'https://live.ipms247.com/frontoffice/stayview'
 };
 
-// Navegador compartido (más rápido)
+// Navegador compartido
 let browser = null;
 
-// Inicializar navegador
 async function getBrowser() {
   if (!browser) {
     browser = await puppeteer.launch({
@@ -64,37 +63,30 @@ async function scrapeEzee(queryType = 'general') {
     console.log('📄 Loading login page...');
     await page.goto(EZEE_URLS.login, { waitUntil: 'networkidle2', timeout: 60000 });
     
-    // Esperar formulario - usar selectores exactos que funcionaron
+    // Esperar formulario
     console.log('⏳ Waiting for login form...');
     await page.waitForSelector('input#username', { timeout: 15000 });
     
-    // Llenar formulario con selectores exactos
+    // Llenar formulario
     console.log('✍️ Filling login form...');
     await page.type('input#username', EZEE_CREDENTIALS.username);
-    console.log('  ✅ Username filled');
-    
     await page.type('input#password', EZEE_CREDENTIALS.password);
-    console.log('  ✅ Password filled');
-    
     await page.type('input#hotelcode', EZEE_CREDENTIALS.propertyCode);
-    console.log('  ✅ Property code filled');
     
-    // Login - usar el selector exacto que funcionó
+    // Login
     console.log('🔑 Clicking SIGN IN...');
     await page.click('button#login');
-    console.log('✅ SIGN IN clicked');
     
-    // Esperar navegación después del login
+    // Esperar navegación
     console.log('⏳ Waiting for login to complete...');
     await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {});
     await page.waitForTimeout(3000);
     
-    // PASO CRÍTICO: Hacer clic en "Property Management System"
+    // Hacer clic en Property Management System
     console.log('🏨 Looking for Property Management System button...');
     try {
-      await page.waitForTimeout(3000); // Esperar a que cargue la página
+      await page.waitForTimeout(3000);
       
-      // Buscar y hacer click usando evaluate (más confiable)
       const pmsClicked = await page.evaluate(() => {
         const buttons = Array.from(document.querySelectorAll('button'));
         const pmsButton = buttons.find(btn => 
@@ -113,15 +105,14 @@ async function scrapeEzee(queryType = 'general') {
         await page.waitForTimeout(3000);
       } else {
         console.log('⚠️ PMS button not found, trying direct navigation...');
-        await page.goto('https://live.ipms247.com/frontoffice/reservations', { 
+        await page.goto(EZEE_URLS.reservations, { 
           waitUntil: 'networkidle2', 
           timeout: 30000 
         });
       }
     } catch (error) {
       console.log('⚠️ Error with PMS button:', error.message);
-      // Intentar navegación directa
-      await page.goto('https://live.ipms247.com/frontoffice/reservations', { 
+      await page.goto(EZEE_URLS.reservations, { 
         waitUntil: 'networkidle2', 
         timeout: 30000 
       });
@@ -142,30 +133,18 @@ async function scrapeEzee(queryType = 'general') {
       console.log('📋 Navigating to reservations page...');
       await page.goto(EZEE_URLS.reservations, { waitUntil: 'networkidle2', timeout: 60000 });
       
-      // Esperar a que carguen las tarjetas de Material-UI
-      console.log('⏳ Waiting for reservation cards to load...');
-      await page.waitForSelector('.MuiCard-root, .MuiPaper-root', { timeout: 15000 }).catch(() => {
-        console.log('⚠️ No MUI cards found, trying alternative selectors...');
-      });
-      
-      await page.waitForTimeout(3000); // Dar tiempo extra para que cargue todo
+      console.log('⏳ Waiting for page to load...');
+      await page.waitForTimeout(5000);
       
       console.log('📊 Extracting page content...');
-      
-      // Extraer el contenido completo de la página para que la IA lo procese
       const pageData = await page.evaluate(() => {
-        // Obtener el contenedor principal
         const mainContent = document.querySelector('main, #root, .MuiContainer-root') || document.body;
-        
-        // Extraer texto limpio
         const textContent = mainContent.textContent.replace(/\s+/g, ' ').trim();
-        
-        // Contar elementos que parecen reservas
         const cards = document.querySelectorAll('.MuiCard-root, .MuiPaper-root, [class*="card"]');
         
         return {
-          html: mainContent.innerHTML.substring(0, 50000), // Limitar tamaño
-          text: textContent.substring(0, 10000), // Texto limpio
+          html: mainContent.innerHTML.substring(0, 50000),
+          text: textContent.substring(0, 10000),
           cardCount: cards.length,
           url: window.location.href,
           title: document.title
@@ -174,28 +153,6 @@ async function scrapeEzee(queryType = 'general') {
       
       console.log(`✅ Extracted page data (${pageData.cardCount} cards found)`);
       data.reservations = pageData;
-    }
-    
-    // Extraer disponibilidad
-    if (queryType === 'availability' || queryType === 'general') {
-      await page.goto(EZEE_URLS.availability, { waitUntil: 'networkidle2', timeout: 30000 });
-      
-      const availability = await page.evaluate(() => {
-        const rows = Array.from(document.querySelectorAll('table tbody tr'));
-        return rows.map(row => {
-          const cells = row.querySelectorAll('td');
-          return {
-            date: cells[0]?.textContent?.trim() || '',
-            roomType: cells[1]?.textContent?.trim() || '',
-            available: cells[2]?.textContent?.trim() || '',
-            occupied: cells[3]?.textContent?.trim() || '',
-            price: cells[4]?.textContent?.trim() || '',
-            occupancy: cells[5]?.textContent?.trim() || ''
-          };
-        });
-      });
-      
-      data.availability = availability;
     }
     
     await page.close();
@@ -240,7 +197,7 @@ app.listen(PORT, () => {
   console.log(`Scrape endpoint: POST http://localhost:${PORT}/scrape`);
 });
 
-// Cleanup al cerrar
+// Cleanup
 process.on('SIGINT', async () => {
   if (browser) {
     await browser.close();
