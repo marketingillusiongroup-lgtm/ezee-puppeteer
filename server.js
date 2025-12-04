@@ -3,6 +3,7 @@ const puppeteer = require('puppeteer');
 require('dotenv').config();
 const { scrapeStayView } = require('./scrape-stayview');
 const { scrapeAllEzee } = require('./scrape-all-ezee');
+const { scrapeAllEzeeImproved } = require('./scrape-all-ezee-improved');
 
 const app = express();
 app.use(express.json());
@@ -336,8 +337,8 @@ app.post('/scrape-all', async (req, res) => {
     await page.waitForTimeout(3000);
     
     // Usar la función completa de scraping
-    console.log('📊 Extracting ALL data from eZee...');
-    const allData = await scrapeAllEzee(page);
+    console.log('📊 Extracting ALL data from eZee (IMPROVED)...');
+    const allData = await scrapeAllEzeeImproved(page);
     
     await page.close();
     
@@ -371,3 +372,4 @@ process.on('SIGINT', async () => {
   }
   process.exit();
 });
+
