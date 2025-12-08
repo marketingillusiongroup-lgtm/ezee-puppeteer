@@ -76,66 +76,102 @@ async function scrapeAllEzeeImproved(page) {
             return null;
           }
           
-          // Extraer nombre del huésped - MÚLTIPLES ESTRATEGIAS
+          // Extraer nombre del huésped - ESTRATEGIA SIMPLIFICADA Y ROBUSTA
           let nombre = '';
           
-          // Estrategia 1: Buscar en h6 (más confiable)
+          // Estrategia 1: Buscar en h6 o Typography-h6 (más confiable)
           const nameElements = card.querySelectorAll('h6, .MuiTypography-h6, [class*="Typography-h6"]');
           for (const el of nameElements) {
             const text = el.textContent?.trim() || '';
-            if (isValidName(text) && text.length > 3 && text.length < 60) {
+            if (isValidName(text) && text.length > 3 && text.length < 80) {
               nombre = text;
               break;
             }
           }
           
-          // Estrategia 2: Buscar patrones de nombres con títulos
+          // Estrategia 2: Buscar en las primeras líneas del texto (el nombre siempre está al inicio)
           if (!nombre) {
-            const titleMatch = allText.match(/(?:Mr\.|Ms\.|Mrs\.|Dr\.|Miss|Mister)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,4})/);
-            if (titleMatch && isValidName(titleMatch[0])) {
-              nombre = titleMatch[0].trim();
-            }
-          }
-          
-          // Estrategia 3: Buscar nombres propios (2-4 palabras con mayúscula inicial)
-          if (!nombre) {
-            const namePattern = /([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})/g;
-            const matches = allText.match(namePattern);
-            if (matches) {
-              for (const match of matches) {
-                const trimmed = match.trim();
-                if (isValidName(trimmed) && trimmed.length > 5 && trimmed.length < 50) {
-                  nombre = trimmed;
+            const lines = allText.split(/\n/).filter(l => l.trim());
+            for (let i = 0; i < Math.min(6, lines.length); i++) {
+              let line = lines[i].trim();
+              // Limpiar la línea de caracteres especiales al inicio
+              line = line.replace(/^[^A-Za-z]*/, '');
+              // Buscar nombres con títulos
+              const titleMatch = line.match(/(?:Mr\.|Ms\.|Mrs\.|Dr\.|Miss|Mister)?\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,4})/);
+              if (titleMatch) {
+                const candidate = titleMatch[0].trim();
+                if (isValidName(candidate) && candidate.length > 5 && candidate.length < 80) {
+                  nombre = candidate;
+                  break;
+                }
+              }
+              // Si no tiene título, buscar directamente
+              if (!nombre && /^[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,4}$/.test(line)) {
+                if (isValidName(line) && line.length > 5 && line.length < 80) {
+                  nombre = line;
                   break;
                 }
               }
             }
           }
           
-          // Estrategia 4: Buscar en las primeras líneas del texto
+          // Estrategia 3: Buscar el primer patrón de nombre válido en el texto (antes del booking ID)
           if (!nombre) {
-            const lines = allText.split(/\n|(?:\s{2,})/).filter(l => l.trim());
-            for (const line of lines.slice(0, 8)) {
-              const trimmed = line.trim();
-              if (isValidName(trimmed) && 
-                  trimmed.length > 5 && 
-                  trimmed.length < 50 && 
-                  /^[A-Z]/.test(trimmed) &&
-                  !trimmed.match(/^\d|^\d{2}\/\d{2}\/\d{4}/)) {
-                nombre = trimmed;
+            // Buscar booking ID primero para saber dónde termina el nombre
+            const bookingIdMatch = allText.match(/(\d+)\s*[|]\s*([A-Z0-9/]+)/);
+            const searchLimit = bookingIdMatch ? bookingIdMatch.index : 500;
+            const textToSearch = allText.substring(0, searchLimit);
+            
+            const namePattern = /([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,4})/g;
+            const matches = textToSearch.match(namePattern);
+            if (matches) {
+              for (let i = 0; i < Math.min(5, matches.length); i++) {
+                const candidate = matches[i].trim();
+                if (isValidName(candidate) && candidate.length > 5 && candidate.length < 80) {
+                  nombre = candidate;
+                  break;
+                }
+              }
+            }
+          }
+          
+          // Estrategia 4: Buscar nombres con títulos en todo el texto
+          if (!nombre) {
+            const titleMatch = allText.match(/(?:Mr\.|Ms\.|Mrs\.|Dr\.|Miss|Mister)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,4})/);
+            if (titleMatch && isValidName(titleMatch[0])) {
+              nombre = titleMatch[0].trim();
+            }
+          }
+
+          // Extraer booking ID - MEJORADO
+          let bookingId = '';
+          
+          // Buscar patrón en el texto completo primero
+          const bookingIdPattern = /(\d+)\s*[|]\s*([A-Z0-9/]+)/;
+          const bookingMatch = allText.match(bookingIdPattern);
+          if (bookingMatch) {
+            bookingId = bookingMatch[0].trim();
+          } else {
+            // Buscar en elementos Typography-body2
+            const bookingIdElements = card.querySelectorAll('.MuiTypography-body2, [class*="Typography-body2"]');
+            for (const el of bookingIdElements) {
+              const text = el.textContent?.trim() || '';
+              if (text.match(/\d+\s*[|]\s*[A-Z0-9/]+/)) {
+                bookingId = text;
                 break;
               }
             }
           }
-
-          // Extraer booking ID
-          const bookingIdElements = card.querySelectorAll('.MuiTypography-body2, [class*="Typography-body2"]');
-          let bookingId = '';
-          for (const el of bookingIdElements) {
-            const text = el.textContent?.trim() || '';
-            if (text.match(/\d+\s*[|]\s*[A-Z0-9/]+/)) {
-              bookingId = text;
-              break;
+          
+          // Si aún no encontramos, buscar después del nombre
+          if (!bookingId && nombre) {
+            const nameIndex = allText.indexOf(nombre);
+            if (nameIndex >= 0) {
+              const textAfterName = allText.substring(nameIndex + nombre.length, nameIndex + nombre.length + 100);
+              const match = textAfterName.match(/(\d+)\s*[|]\s*([A-Z0-9/]+)/);
+              if (match) {
+                bookingId = match[0].trim();
+              }
             }
           }
 
@@ -154,51 +190,92 @@ async function scrapeAllEzeeImproved(page) {
           const nightsMatch = allText.match(/(\d+)\s*Nights?/i);
           const noches = nightsMatch ? parseInt(nightsMatch[1]) : 0;
 
-          // Extraer adultos y niños - MEJORADO
+          // Extraer adultos y niños - ESTRATEGIA MEJORADA
           let adultos = 0;
           let ninos = 0;
           
-          // Buscar iconos de adultos/niños y el número siguiente
-          const adultIcons = card.querySelectorAll('[id*="adult"], [id*="Adult"], [alt*="adult"], [alt*="Adult"], [class*="adult"], [class*="Adult"]');
-          const childIcons = card.querySelectorAll('[id*="child"], [id*="Child"], [alt*="child"], [alt*="Child"], [class*="child"], [class*="Child"]');
+          // Buscar iconos de adultos/niños (múltiples selectores)
+          const iconSelectors = [
+            'img[alt*="adult" i], img[alt*="person" i]',
+            'img[src*="adult" i], img[src*="person" i]',
+            '[id*="adult" i], [id*="person" i]',
+            '[class*="adult" i], [class*="person" i]',
+            'svg[alt*="adult" i], svg[alt*="person" i]'
+          ];
           
-          // Si encontramos iconos, buscar el número siguiente
-          if (adultIcons.length > 0) {
-            adultIcons.forEach(icon => {
-              const nextSibling = icon.nextSibling;
-              if (nextSibling && nextSibling.textContent) {
-                const num = parseInt(nextSibling.textContent.trim());
-                if (!isNaN(num) && num > 0) adultos = num;
+          const childIconSelectors = [
+            'img[alt*="child" i]',
+            'img[src*="child" i]',
+            '[id*="child" i]',
+            '[class*="child" i]',
+            'svg[alt*="child" i]'
+          ];
+          
+          // Buscar iconos de adultos
+          for (const selector of iconSelectors) {
+            try {
+              const icons = card.querySelectorAll(selector);
+              if (icons.length > 0) {
+                icons.forEach(icon => {
+                  // Buscar número siguiente (puede ser sibling o en el mismo elemento padre)
+                  let nextEl = icon.nextSibling;
+                  while (nextEl && nextEl.nodeType !== 1 && nextEl.nodeType !== 3) {
+                    nextEl = nextEl.nextSibling;
+                  }
+                  if (nextEl) {
+                    const text = nextEl.textContent || nextEl.nodeValue || '';
+                    const num = parseInt(text.trim());
+                    if (!isNaN(num) && num > 0) adultos = num;
+                  }
+                  // Buscar en el elemento padre
+                  const parent = icon.parentElement;
+                  if (parent) {
+                    const parentText = parent.textContent || '';
+                    const match = parentText.match(/(\d+)\s*(?:Adults?|Adult|Person)/i);
+                    if (match) {
+                      const num = parseInt(match[1]);
+                      if (!isNaN(num) && num > 0) adultos = num;
+                    }
+                  }
+                });
+                if (adultos > 0) break;
               }
-              // También buscar en el elemento padre
-              const parent = icon.parentElement;
-              if (parent) {
-                const parentText = parent.textContent || '';
-                const match = parentText.match(/(\d+)\s*(?:Adults?|Adult)/i);
-                if (match) adultos = parseInt(match[1]);
-              }
-            });
+            } catch (e) {}
           }
           
-          if (childIcons.length > 0) {
-            childIcons.forEach(icon => {
-              const nextSibling = icon.nextSibling;
-              if (nextSibling && nextSibling.textContent) {
-                const num = parseInt(nextSibling.textContent.trim());
-                if (!isNaN(num) && num >= 0) ninos = num;
+          // Buscar iconos de niños
+          for (const selector of childIconSelectors) {
+            try {
+              const icons = card.querySelectorAll(selector);
+              if (icons.length > 0) {
+                icons.forEach(icon => {
+                  let nextEl = icon.nextSibling;
+                  while (nextEl && nextEl.nodeType !== 1 && nextEl.nodeType !== 3) {
+                    nextEl = nextEl.nextSibling;
+                  }
+                  if (nextEl) {
+                    const text = nextEl.textContent || nextEl.nodeValue || '';
+                    const num = parseInt(text.trim());
+                    if (!isNaN(num) && num >= 0) ninos = num;
+                  }
+                  const parent = icon.parentElement;
+                  if (parent) {
+                    const parentText = parent.textContent || '';
+                    const match = parentText.match(/(\d+)\s*(?:Child|Children)/i);
+                    if (match) {
+                      const num = parseInt(match[1]);
+                      if (!isNaN(num) && num >= 0) ninos = num;
+                    }
+                  }
+                });
+                if (ninos >= 0) break;
               }
-              const parent = icon.parentElement;
-              if (parent) {
-                const parentText = parent.textContent || '';
-                const match = parentText.match(/(\d+)\s*(?:Child|Children)/i);
-                if (match) ninos = parseInt(match[1]);
-              }
-            });
+            } catch (e) {}
           }
           
-          // Fallback: Buscar en el texto con regex
+          // Fallback 1: Buscar en el texto con regex (más común)
           if (adultos === 0) {
-            const adultsMatch = allText.match(/(\d+)\s*(?:Adults?|Adult)/i);
+            const adultsMatch = allText.match(/(\d+)\s*(?:Adults?|Adult|Person)/i);
             if (adultsMatch) adultos = parseInt(adultsMatch[1]);
           }
           
@@ -207,12 +284,35 @@ async function scrapeAllEzeeImproved(page) {
             if (childrenMatch) ninos = parseInt(childrenMatch[1]);
           }
           
-          // Si no encontramos, buscar patrones como "1 0" (adultos niños)
+          // Fallback 2: Buscar patrones como "2 0" cerca de palabras clave
           if (adultos === 0 && ninos === 0) {
-            const guestPattern = allText.match(/(\d+)\s+(\d+)\s*(?:Room|Adults?|Person)/i);
+            const guestPattern = allText.match(/(\d+)\s+(\d+)\s*(?:Room|Adults?|Person|Guest)/i);
             if (guestPattern) {
               adultos = parseInt(guestPattern[1]);
               ninos = parseInt(guestPattern[2]);
+            }
+          }
+          
+          // Fallback 3: Buscar números cerca de iconos de personas (último recurso)
+          if (adultos === 0) {
+            const allImages = card.querySelectorAll('img, svg');
+            for (const img of allImages) {
+              const alt = (img.getAttribute('alt') || '').toLowerCase();
+              const src = (img.getAttribute('src') || '').toLowerCase();
+              if (alt.includes('person') || alt.includes('adult') || src.includes('person') || src.includes('adult')) {
+                const parent = img.parentElement;
+                if (parent) {
+                  const parentText = parent.textContent || '';
+                  const numbers = parentText.match(/\d+/g);
+                  if (numbers && numbers.length > 0) {
+                    const num = parseInt(numbers[0]);
+                    if (!isNaN(num) && num > 0 && num < 20) {
+                      adultos = num;
+                      break;
+                    }
+                  }
+                }
+              }
             }
           }
           
