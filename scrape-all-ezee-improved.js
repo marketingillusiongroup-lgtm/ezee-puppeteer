@@ -58,7 +58,8 @@ async function scrapeAllEzeeImproved(page) {
         // 1. Extraer "noches" de la tarjeta ANTES de hacer click
         let noches = 0;
         try {
-          const nightsElement = await card.$('div.ant-col.ant-col-4.sc-hmlNyy.Ino kim');
+          // Buscar el elemento con el patrón div.ant-col.ant-col-4.sc-...
+          const nightsElement = await card.$('div.ant-col.ant-col-4[class*="sc-"]');
           if (nightsElement) {
             const nightsText = await page.evaluate(el => el.textContent, nightsElement);
             const nightsMatch = nightsText.match(/(\d+)\s*Nights?/i);
@@ -118,19 +119,6 @@ async function scrapeAllEzeeImproved(page) {
               data.correo = emailEl.textContent?.trim() || null;
             }
             
-            // TELÉFONO: Buscar span con teléfono (12px, #666666, junto a ícono)
-            for (const span of allSpans) {
-              const style = window.getComputedStyle(span);
-              const color = style.color;
-              const text = span.textContent?.trim() || '';
-              // Buscar formato de teléfono
-              if (text.match(/\+?\d{1,4}[\s-]?\d{1,4}[\s-]?\d{1,9}/) && 
-                  (color.includes('102, 102, 102') || color.includes('666666'))) {
-                data.telefono = text;
-                break;
-              }
-            }
-            
             // FECHAS: span.sc-csvytd.bYxtBL (3 elementos: Arrival, Departure, Booking)
             const dateElements = Array.from(document.querySelectorAll('span.sc-csvytd.bYxtBL'));
             if (dateElements.length >= 1) {
@@ -143,32 +131,152 @@ async function scrapeAllEzeeImproved(page) {
               data.bookingDate = dateElements[2].textContent?.trim() || null;
             }
             
-            // RESERVATION NUMBER, VOUCHER NUMBER, ROOM TYPE: div.sc-eJHOIC.jnnoOL
-            const infoElements = Array.from(document.querySelectorAll('div.sc-eJHOIC.jnnoOL'));
-            for (const el of infoElements) {
-              const text = el.textContent?.trim() || '';
-              
-              // Reservation Number: solo números o formato "3439"
-              if (/^\d+$/.test(text) && text.length >= 3 && text.length <= 6) {
-                data.reservationNumber = text;
-              }
-              // Voucher Number: formato con "/" o "-"
-              else if (text.match(/[\d-]+\/[\d-]+/)) {
-                data.voucherNumber = text;
-              }
-              // Room Type/Number: contiene "S " o "Room"
-              else if (text.match(/S\s*\d+|Room|Individual|Compartida|Privada/i)) {
-                // Separar Room Type y Room Number
-                const roomMatch = text.match(/S\s*(\d+)/i);
-                if (roomMatch) {
-                  data.roomNumber = `S ${roomMatch[1]}`;
+            // TELÉFONO: div.ant-space-item (selector exacto)
+            const phoneElements = Array.from(document.querySelectorAll('div.ant-space-item'));
+            for (const phoneEl of phoneElements) {
+              const phoneText = phoneEl.textContent?.trim() || '';
+              // Buscar formato de teléfono (números, puede tener espacios)
+              if (phoneText.match(/^\d{10,15}$/) || phoneText.match(/^\+\d{10,15}$/)) {
+                // Limpiar espacios
+                const cleanPhone = phoneText.replace(/\s+/g, '');
+                if (cleanPhone.length >= 10) {
+                  data.telefono = cleanPhone;
+                  break;
                 }
-                // Room Type es el texto completo sin el número
-                const roomTypeText = text.replace(/S\s*\d+/i, '').trim();
-                if (roomTypeText) {
-                  data.roomType = roomTypeText;
-                } else {
-                  data.roomType = text;
+              }
+            }
+            
+            // RESERVATION NUMBER, VOUCHER NUMBER, ROOM TYPE, ROOM NUMBER
+            // Los labels están en: div.sc-iCfpwr.fKbKMD
+            // Los valores están después de cada label (siguiente elemento hermano o en el mismo contenedor)
+            const labelElements = Array.from(document.querySelectorAll('div.sc-iCfpwr.fKbKMD'));
+            
+            for (const labelEl of labelElements) {
+              const labelText = labelEl.textContent?.trim() || '';
+              
+              // Buscar el valor siguiente (puede estar en el siguiente hermano o en un elemento hijo)
+              let valueElement = null;
+              
+              // Opción 1: Buscar en el siguiente elemento hermano
+              let nextSibling = labelEl.nextElementSibling;
+              while (nextSibling) {
+                const siblingText = nextSibling.textContent?.trim() || '';
+                // Si el siguiente hermano tiene contenido y no es otro label, es el valor
+                if (siblingText && !nextSibling.classList.contains('sc-iCfpwr')) {
+                  valueElement = nextSibling;
+                  break;
+                }
+                nextSibling = nextSibling.nextElementSibling;
+              }
+              
+              // Opción 2: Si no hay hermano, buscar en el contenedor padre
+              if (!valueElement) {
+                const parent = labelEl.parentElement;
+                if (parent) {
+                  // Buscar div.sc-eJHOIC.jnnoOL dentro del mismo contenedor
+                  const valueInParent = parent.querySelector('div.sc-eJHOIC.jnnoOL');
+                  if (valueInParent && valueInParent !== labelEl) {
+                    valueElement = valueInParent;
+                  }
+                }
+              }
+              
+              // Opción 3: Buscar cualquier elemento con contenido después del label
+              if (!valueElement) {
+                // Buscar todos los elementos después de este label en el DOM
+                const allElements = Array.from(document.querySelectorAll('*'));
+                const labelIndex = allElements.indexOf(labelEl);
+                for (let i = labelIndex + 1; i < Math.min(labelIndex + 10, allElements.length); i++) {
+                  const candidate = allElements[i];
+                  const candidateText = candidate.textContent?.trim() || '';
+                  // Si tiene contenido y no es un label, puede ser el valor
+                  if (candidateText && candidateText !== labelText && 
+                      !candidate.classList.contains('sc-iCfpwr') &&
+                      candidateText.length > 0) {
+                    valueElement = candidate;
+                    break;
+                  }
+                }
+              }
+              
+              const valueText = valueElement ? valueElement.textContent?.trim() : '';
+              
+              // RESERVATION NUMBER
+              if (labelText.match(/Reservation\s*Number/i)) {
+                if (valueText) {
+                  // Limpiar espacios y tomar solo números
+                  const cleanValue = valueText.replace(/\s+/g, '');
+                  if (/^\d+$/.test(cleanValue) && cleanValue.length >= 3 && cleanValue.length <= 6) {
+                    data.reservationNumber = cleanValue;
+                  }
+                }
+              }
+              
+              // VOUCHER NUMBER
+              else if (labelText.match(/Voucher\s*Number/i)) {
+                if (valueText) {
+                  // Limpiar espacios pero mantener "/" o "-"
+                  const cleanValue = valueText.replace(/\s+/g, '');
+                  if (cleanValue.match(/[\d\/-]+/)) {
+                    data.voucherNumber = cleanValue;
+                  }
+                }
+              }
+              
+              // ROOM TYPE
+              else if (labelText.match(/Room\s*Type/i)) {
+                if (valueText) {
+                  // El room type puede contener "Individual Compartida/ Privada" o similar
+                  // Si tiene "S X" al final, quitarlo
+                  const roomTypeText = valueText.replace(/\s*S\s*\d+.*$/i, '').trim();
+                  if (roomTypeText) {
+                    data.roomType = roomTypeText;
+                  } else {
+                    data.roomType = valueText;
+                  }
+                }
+              }
+              
+              // ROOM NUMBER
+              else if (labelText.match(/Room\s*Number/i)) {
+                if (valueText) {
+                  // Buscar formato "S 1" o "S1"
+                  const roomMatch = valueText.match(/S\s*(\d+)/i);
+                  if (roomMatch) {
+                    data.roomNumber = `S ${roomMatch[1]}`;
+                  } else {
+                    data.roomNumber = valueText;
+                  }
+                }
+              }
+            }
+            
+            // Fallback: Si no encontramos por labels, buscar por patrones en div.sc-eJHOIC.jnnoOL
+            if (!data.reservationNumber || !data.voucherNumber || !data.roomType || !data.roomNumber) {
+              const infoElements = Array.from(document.querySelectorAll('div.sc-eJHOIC.jnnoOL'));
+              for (const el of infoElements) {
+                const text = el.textContent?.trim() || '';
+                if (!text) continue;
+                
+                // Reservation Number: solo números (3-6 dígitos)
+                if (!data.reservationNumber && /^\d+$/.test(text) && text.length >= 3 && text.length <= 6) {
+                  data.reservationNumber = text;
+                }
+                // Voucher Number: formato con "/" o números largos
+                else if (!data.voucherNumber && (text.match(/[\d-]+\/[\d-]+/) || text.match(/^\d{10,}$/))) {
+                  data.voucherNumber = text.replace(/\s+/g, '');
+                }
+                // Room Type: contiene palabras clave
+                else if (!data.roomType && text.match(/Individual|Compartida|Privada|Room\s*Only/i)) {
+                  const roomTypeText = text.replace(/\s*S\s*\d+.*$/i, '').trim();
+                  data.roomType = roomTypeText || text;
+                }
+                // Room Number: contiene "S " seguido de número
+                else if (!data.roomNumber && text.match(/S\s*\d+/i)) {
+                  const roomMatch = text.match(/S\s*(\d+)/i);
+                  if (roomMatch) {
+                    data.roomNumber = `S ${roomMatch[1]}`;
+                  }
                 }
               }
             }
