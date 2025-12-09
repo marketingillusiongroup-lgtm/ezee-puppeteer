@@ -36,385 +36,277 @@ async function scrapeAllEzeeImproved(page) {
     
     await page.waitForTimeout(3000);
     
-    results.reservations = await page.evaluate(() => {
-      // Palabras a excluir (elementos de la UI, no nombres reales)
-      const invalidNames = [
-        'Make Group', 'Export', 'Search', 'Mini Rooms', 'Illusion',
-        'Reservations', 'Arrivals', 'Departures', 'In-house',
-        'Booking Date', 'Total', 'Paid', 'Balance', 'Nights',
-        'Room', 'Check', 'Confirm', 'Assign Room'
-      ];
-      
-      // Función para validar si un nombre es válido
-      const isValidName = (name) => {
-        if (!name || name.length < 3) return false;
-        const lowerName = name.toLowerCase();
-        return !invalidNames.some(invalid => lowerName.includes(invalid.toLowerCase()));
-      };
-      
-      // Función para extraer una reserva estructurada de una tarjeta
-      const extractReservation = (card) => {
+    // NUEVA ESTRATEGIA: Hacer click en cada tarjeta y extraer del popup
+    console.log('🔍 Finding reservation cards...');
+    
+    // Obtener todas las tarjetas de reserva
+    const cardHandles = await page.$$('div.sc-kvxsdh.cczCye');
+    console.log(`📦 Found ${cardHandles.length} reservation cards`);
+    
+    results.reservations = [];
+    
+    for (let i = 0; i < cardHandles.length; i++) {
+      try {
+        console.log(`\n📋 Processing reservation ${i + 1}/${cardHandles.length}...`);
+        
+        // Obtener la tarjeta nuevamente (por si el DOM cambió)
+        const cards = await page.$$('div.sc-kvxsdh.cczCye');
+        if (i >= cards.length) break;
+        
+        const card = cards[i];
+        
+        // 1. Extraer "noches" de la tarjeta ANTES de hacer click
+        let noches = 0;
         try {
-          const allText = card.textContent || '';
-          
-          // VALIDACIÓN INICIAL: Debe tener datos mínimos de una reserva
-          const hasRequiredData = (
-            allText.includes('Nights') && 
-            (allText.includes('Booking Date') || allText.match(/\d{2}\/\d{2}\/\d{4}/)) &&
-            (allText.includes('Total') || allText.includes('Me$') || allText.includes('Mex$'))
-          );
-          
-          if (!hasRequiredData) {
-            return null; // No es una tarjeta de reserva válida
-          }
-          
-          // EXCLUIR: Botones, headers, y otros elementos de UI
-          if (card.tagName === 'BUTTON' || 
-              card.closest('button') || 
-              card.closest('header') ||
-              allText.includes('Make Group') && !allText.includes('Nights')) {
-            return null;
-          }
-          
-          // Extraer nombre del huésped - ESTRATEGIA SIMPLIFICADA Y ROBUSTA
-          let nombre = '';
-          
-          // Estrategia 1: Buscar en h6 o Typography-h6 (más confiable)
-          const nameElements = card.querySelectorAll('h6, .MuiTypography-h6, [class*="Typography-h6"]');
-          for (const el of nameElements) {
-            const text = el.textContent?.trim() || '';
-            if (isValidName(text) && text.length > 3 && text.length < 80) {
-              nombre = text;
-              break;
+          const nightsElement = await card.$('div.ant-col.ant-col-4.sc-hmlNyy.Ino kim');
+          if (nightsElement) {
+            const nightsText = await page.evaluate(el => el.textContent, nightsElement);
+            const nightsMatch = nightsText.match(/(\d+)\s*Nights?/i);
+            if (nightsMatch) {
+              noches = parseInt(nightsMatch[1]);
+              console.log(`   ✅ Nights extracted: ${noches}`);
             }
           }
+        } catch (e) {
+          console.log(`   ⚠️ Could not extract nights from card: ${e.message}`);
+        }
+        
+        // 2. Hacer click en la tarjeta para abrir el popup
+        await card.click();
+        await page.waitForTimeout(1500); // Esperar a que se abra el popup
+        
+        // 3. Extraer todos los datos del popup
+        const reservationData = await page.evaluate(() => {
+          const data = {
+            nombre: null,
+            telefono: null,
+            correo: null,
+            reservationNumber: null,
+            voucherNumber: null,
+            arrivalDate: null,
+            departureDate: null,
+            bookingDate: null,
+            status: null,
+            roomType: null,
+            roomNumber: null,
+            adultos: 0,
+            ninos: 0,
+            total: 0,
+            paid: 0,
+            balance: 0
+          };
           
-          // Estrategia 2: Buscar en las primeras líneas del texto (el nombre siempre está al inicio)
-          if (!nombre) {
-            const lines = allText.split(/\n/).filter(l => l.trim());
-            for (let i = 0; i < Math.min(6, lines.length); i++) {
-              let line = lines[i].trim();
-              // Limpiar la línea de caracteres especiales al inicio
-              line = line.replace(/^[^A-Za-z]*/, '');
-              // Buscar nombres con títulos
-              const titleMatch = line.match(/(?:Mr\.|Ms\.|Mrs\.|Dr\.|Miss|Mister)?\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,4})/);
-              if (titleMatch) {
-                const candidate = titleMatch[0].trim();
-                if (isValidName(candidate) && candidate.length > 5 && candidate.length < 80) {
-                  nombre = candidate;
-                  break;
-                }
-              }
-              // Si no tiene título, buscar directamente
-              if (!nombre && /^[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,4}$/.test(line)) {
-                if (isValidName(line) && line.length > 5 && line.length < 80) {
-                  nombre = line;
+          try {
+            // NOMBRE: Buscar span más grande (18px) cerca del inicio
+            const allSpans = Array.from(document.querySelectorAll('span'));
+            for (const span of allSpans) {
+              const style = window.getComputedStyle(span);
+              const fontSize = style.fontSize;
+              const text = span.textContent?.trim() || '';
+              if (fontSize === '18px' && text.length > 3 && text.length < 80 && /^[A-Z]/.test(text)) {
+                // Verificar que no sea un elemento de UI
+                if (!text.match(/^(Reservation|Voucher|Booking|Arrival|Departure|Room|Total|Paid|Balance)/i)) {
+                  data.nombre = text;
                   break;
                 }
               }
             }
-          }
-          
-          // Estrategia 3: Buscar el primer patrón de nombre válido en el texto (antes del booking ID)
-          if (!nombre) {
-            // Buscar booking ID primero para saber dónde termina el nombre
-            const bookingIdMatch = allText.match(/(\d+)\s*[|]\s*([A-Z0-9/]+)/);
-            const searchLimit = bookingIdMatch ? bookingIdMatch.index : 500;
-            const textToSearch = allText.substring(0, searchLimit);
             
-            const namePattern = /([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,4})/g;
-            const matches = textToSearch.match(namePattern);
-            if (matches) {
-              for (let i = 0; i < Math.min(5, matches.length); i++) {
-                const candidate = matches[i].trim();
-                if (isValidName(candidate) && candidate.length > 5 && candidate.length < 80) {
-                  nombre = candidate;
-                  break;
-                }
-              }
+            // CORREO: Selector específico
+            const emailEl = document.querySelector('span.sc-bHDJZS.gGRMfe');
+            if (emailEl) {
+              data.correo = emailEl.textContent?.trim() || null;
             }
-          }
-          
-          // Estrategia 4: Buscar nombres con títulos en todo el texto
-          if (!nombre) {
-            const titleMatch = allText.match(/(?:Mr\.|Ms\.|Mrs\.|Dr\.|Miss|Mister)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,4})/);
-            if (titleMatch && isValidName(titleMatch[0])) {
-              nombre = titleMatch[0].trim();
-            }
-          }
-
-          // Extraer booking ID - MEJORADO
-          let bookingId = '';
-          
-          // Buscar patrón en el texto completo primero
-          const bookingIdPattern = /(\d+)\s*[|]\s*([A-Z0-9/]+)/;
-          const bookingMatch = allText.match(bookingIdPattern);
-          if (bookingMatch) {
-            bookingId = bookingMatch[0].trim();
-          } else {
-            // Buscar en elementos Typography-body2
-            const bookingIdElements = card.querySelectorAll('.MuiTypography-body2, [class*="Typography-body2"]');
-            for (const el of bookingIdElements) {
-              const text = el.textContent?.trim() || '';
-              if (text.match(/\d+\s*[|]\s*[A-Z0-9/]+/)) {
-                bookingId = text;
+            
+            // TELÉFONO: Buscar span con teléfono (12px, #666666, junto a ícono)
+            for (const span of allSpans) {
+              const style = window.getComputedStyle(span);
+              const color = style.color;
+              const text = span.textContent?.trim() || '';
+              // Buscar formato de teléfono
+              if (text.match(/\+?\d{1,4}[\s-]?\d{1,4}[\s-]?\d{1,9}/) && 
+                  (color.includes('102, 102, 102') || color.includes('666666'))) {
+                data.telefono = text;
                 break;
               }
             }
-          }
-          
-          // Si aún no encontramos, buscar después del nombre
-          if (!bookingId && nombre) {
-            const nameIndex = allText.indexOf(nombre);
-            if (nameIndex >= 0) {
-              const textAfterName = allText.substring(nameIndex + nombre.length, nameIndex + nombre.length + 100);
-              const match = textAfterName.match(/(\d+)\s*[|]\s*([A-Z0-9/]+)/);
-              if (match) {
-                bookingId = match[0].trim();
+            
+            // FECHAS: span.sc-csvytd.bYxtBL (3 elementos: Arrival, Departure, Booking)
+            const dateElements = Array.from(document.querySelectorAll('span.sc-csvytd.bYxtBL'));
+            if (dateElements.length >= 1) {
+              data.arrivalDate = dateElements[0].textContent?.trim() || null;
+            }
+            if (dateElements.length >= 2) {
+              data.departureDate = dateElements[1].textContent?.trim() || null;
+            }
+            if (dateElements.length >= 3) {
+              data.bookingDate = dateElements[2].textContent?.trim() || null;
+            }
+            
+            // RESERVATION NUMBER, VOUCHER NUMBER, ROOM TYPE: div.sc-eJHOIC.jnnoOL
+            const infoElements = Array.from(document.querySelectorAll('div.sc-eJHOIC.jnnoOL'));
+            for (const el of infoElements) {
+              const text = el.textContent?.trim() || '';
+              
+              // Reservation Number: solo números o formato "3439"
+              if (/^\d+$/.test(text) && text.length >= 3 && text.length <= 6) {
+                data.reservationNumber = text;
+              }
+              // Voucher Number: formato con "/" o "-"
+              else if (text.match(/[\d-]+\/[\d-]+/)) {
+                data.voucherNumber = text;
+              }
+              // Room Type/Number: contiene "S " o "Room"
+              else if (text.match(/S\s*\d+|Room|Individual|Compartida|Privada/i)) {
+                // Separar Room Type y Room Number
+                const roomMatch = text.match(/S\s*(\d+)/i);
+                if (roomMatch) {
+                  data.roomNumber = `S ${roomMatch[1]}`;
+                }
+                // Room Type es el texto completo sin el número
+                const roomTypeText = text.replace(/S\s*\d+/i, '').trim();
+                if (roomTypeText) {
+                  data.roomType = roomTypeText;
+                } else {
+                  data.roomType = text;
+                }
               }
             }
-          }
-
-          // Extraer fechas
-          const dateMatches = allText.match(/(\d{2}\/\d{2}\/\d{4})/g) || [];
-          const checkInDate = dateMatches[0] || null;
-          const checkOutDate = dateMatches[1] || null;
-          const bookingDate = dateMatches[2] || null;
-
-          // Extraer horas
-          const timeMatches = allText.match(/(\d{1,2}:\d{2}:\d{2}\s*(?:AM|PM))/gi) || [];
-          const checkInTime = timeMatches[0] || null;
-          const checkOutTime = timeMatches[1] || null;
-
-          // Extraer noches
-          const nightsMatch = allText.match(/(\d+)\s*Nights?/i);
-          const noches = nightsMatch ? parseInt(nightsMatch[1]) : 0;
-
-          // Extraer adultos y niños - ESTRATEGIA MEJORADA
-          let adultos = 0;
-          let ninos = 0;
-          
-          // Buscar iconos de adultos/niños (múltiples selectores)
-          const iconSelectors = [
-            'img[alt*="adult" i], img[alt*="person" i]',
-            'img[src*="adult" i], img[src*="person" i]',
-            '[id*="adult" i], [id*="person" i]',
-            '[class*="adult" i], [class*="person" i]',
-            'svg[alt*="adult" i], svg[alt*="person" i]'
-          ];
-          
-          const childIconSelectors = [
-            'img[alt*="child" i]',
-            'img[src*="child" i]',
-            '[id*="child" i]',
-            '[class*="child" i]',
-            'svg[alt*="child" i]'
-          ];
-          
-          // Buscar iconos de adultos
-          for (const selector of iconSelectors) {
-            try {
-              const icons = card.querySelectorAll(selector);
-              if (icons.length > 0) {
-                icons.forEach(icon => {
-                  // Buscar número siguiente (puede ser sibling o en el mismo elemento padre)
-                  let nextEl = icon.nextSibling;
-                  while (nextEl && nextEl.nodeType !== 1 && nextEl.nodeType !== 3) {
-                    nextEl = nextEl.nextSibling;
-                  }
-                  if (nextEl) {
-                    const text = nextEl.textContent || nextEl.nodeValue || '';
-                    const num = parseInt(text.trim());
-                    if (!isNaN(num) && num > 0) adultos = num;
-                  }
-                  // Buscar en el elemento padre
-                  const parent = icon.parentElement;
-                  if (parent) {
-                    const parentText = parent.textContent || '';
-                    const match = parentText.match(/(\d+)\s*(?:Adults?|Adult|Person)/i);
-                    if (match) {
-                      const num = parseInt(match[1]);
-                      if (!isNaN(num) && num > 0) adultos = num;
-                    }
-                  }
-                });
-                if (adultos > 0) break;
+            
+            // STATUS: div.sc-ivTmOn.cXSEyG
+            const statusEl = document.querySelector('div.sc-ivTmOn.cXSEyG');
+            if (statusEl) {
+              const statusText = statusEl.textContent?.trim() || '';
+              if (statusText.toLowerCase().includes('confirm')) {
+                data.status = 'confirmed';
+              } else if (statusText.toLowerCase().includes('pending')) {
+                data.status = 'pending';
+              } else if (statusText.toLowerCase().includes('check-in')) {
+                data.status = 'checked-in';
+              } else if (statusText.toLowerCase().includes('check-out')) {
+                data.status = 'checked-out';
+              } else if (statusText.toLowerCase().includes('cancel')) {
+                data.status = 'cancelled';
+              } else {
+                data.status = statusText.toLowerCase();
               }
-            } catch (e) {}
-          }
-          
-          // Buscar iconos de niños
-          for (const selector of childIconSelectors) {
-            try {
-              const icons = card.querySelectorAll(selector);
-              if (icons.length > 0) {
-                icons.forEach(icon => {
-                  let nextEl = icon.nextSibling;
-                  while (nextEl && nextEl.nodeType !== 1 && nextEl.nodeType !== 3) {
-                    nextEl = nextEl.nextSibling;
-                  }
-                  if (nextEl) {
-                    const text = nextEl.textContent || nextEl.nodeValue || '';
-                    const num = parseInt(text.trim());
-                    if (!isNaN(num) && num >= 0) ninos = num;
-                  }
-                  const parent = icon.parentElement;
-                  if (parent) {
-                    const parentText = parent.textContent || '';
-                    const match = parentText.match(/(\d+)\s*(?:Child|Children)/i);
-                    if (match) {
-                      const num = parseInt(match[1]);
-                      if (!isNaN(num) && num >= 0) ninos = num;
-                    }
-                  }
-                });
-                if (ninos >= 0) break;
-              }
-            } catch (e) {}
-          }
-          
-          // Fallback 1: Buscar en el texto con regex (más común)
-          if (adultos === 0) {
-            const adultsMatch = allText.match(/(\d+)\s*(?:Adults?|Adult|Person)/i);
-            if (adultsMatch) adultos = parseInt(adultsMatch[1]);
-          }
-          
-          if (ninos === 0) {
-            const childrenMatch = allText.match(/(\d+)\s*(?:Child|Children)/i);
-            if (childrenMatch) ninos = parseInt(childrenMatch[1]);
-          }
-          
-          // Fallback 2: Buscar patrones como "2 0" cerca de palabras clave
-          if (adultos === 0 && ninos === 0) {
-            const guestPattern = allText.match(/(\d+)\s+(\d+)\s*(?:Room|Adults?|Person|Guest)/i);
-            if (guestPattern) {
-              adultos = parseInt(guestPattern[1]);
-              ninos = parseInt(guestPattern[2]);
             }
-          }
-          
-          // Fallback 3: Buscar números cerca de iconos de personas (último recurso)
-          if (adultos === 0) {
-            const allImages = card.querySelectorAll('img, svg');
-            for (const img of allImages) {
-              const alt = (img.getAttribute('alt') || '').toLowerCase();
-              const src = (img.getAttribute('src') || '').toLowerCase();
-              if (alt.includes('person') || alt.includes('adult') || src.includes('person') || src.includes('adult')) {
-                const parent = img.parentElement;
-                if (parent) {
-                  const parentText = parent.textContent || '';
-                  const numbers = parentText.match(/\d+/g);
-                  if (numbers && numbers.length > 0) {
-                    const num = parseInt(numbers[0]);
-                    if (!isNaN(num) && num > 0 && num < 20) {
-                      adultos = num;
-                      break;
-                    }
+            
+            // PERSONAS (Adults/Children): div.sc-cvnuvz.hZreah
+            const paxEl = document.querySelector('div.sc-cvnuvz.hZreah');
+            if (paxEl) {
+              const paxText = paxEl.textContent || '';
+              // Buscar números en el texto (formato: "2 0" o similar)
+              const numbers = paxText.match(/\d+/g);
+              if (numbers && numbers.length >= 1) {
+                data.adultos = parseInt(numbers[0]) || 0;
+              }
+              if (numbers && numbers.length >= 2) {
+                data.ninos = parseInt(numbers[1]) || 0;
+              }
+            }
+            
+            // TOTAL, PAID, BALANCE: div.ant-col.ant-col-12
+            const financialElements = Array.from(document.querySelectorAll('div.ant-col.ant-col-12'));
+            for (const el of financialElements) {
+              const text = el.textContent?.trim() || '';
+              const style = window.getComputedStyle(el);
+              const color = style.color;
+              
+              // Buscar por contexto (texto padre) o color
+              const parentText = el.parentElement?.textContent || '';
+              
+              if (text.includes('Mex$') || text.includes('Me$')) {
+                const amountMatch = text.match(/[\d,]+\.?\d*/);
+                if (amountMatch) {
+                  const amount = parseFloat(amountMatch[0].replace(/,/g, ''));
+                  
+                  // Balance es rojo (#FF5353)
+                  if (color.includes('255, 83, 83') || color.includes('FF5353')) {
+                    data.balance = amount;
+                  }
+                  // Total y Paid por contexto
+                  else if (parentText.includes('Total') || text.includes('Total')) {
+                    data.total = amount;
+                  }
+                  else if (parentText.includes('Paid') || text.includes('Paid')) {
+                    data.paid = amount;
                   }
                 }
               }
             }
+            
+          } catch (error) {
+            console.error('Error extracting popup data:', error);
           }
           
-          const personas = adultos + ninos;
-
-          // Extraer habitación
-          const roomMatch = allText.match(/S\s*(\d+)/i) || allText.match(/Room\s*Type[^/]*\/\s*([^/]+)/i);
-          const habitacion = roomMatch ? (roomMatch[0].includes('S ') ? `S ${roomMatch[1]}` : roomMatch[1].trim()) : null;
-
-          // Extraer montos (mejorado para capturar diferentes formatos)
-          const totalMatch = allText.match(/Total[^\d]*([\d,]+\.?\d*)/i) || allText.match(/Total[^M]*Me?\$?\s*([\d,]+\.?\d*)/i);
-          const paidMatch = allText.match(/Paid[^\d]*([\d,]+\.?\d*)/i) || allText.match(/Paid[^M]*Me?\$?\s*([\d,]+\.?\d*)/i);
-          const balanceMatch = allText.match(/Balance[^\d]*([\d,]+\.?\d*)/i) || allText.match(/Balance[^M]*Me?\$?\s*([\d,]+\.?\d*)/i);
-          
-          const total = totalMatch ? parseFloat(totalMatch[1].replace(/,/g, '')) : 0;
-          const paid = paidMatch ? parseFloat(paidMatch[1].replace(/,/g, '')) : 0;
-          const balance = balanceMatch ? parseFloat(balanceMatch[1].replace(/,/g, '')) : 0;
-
-          // Extraer estado
-          const statusText = allText.toLowerCase();
-          let status = 'pending';
-          if (statusText.includes('confirm')) status = 'confirmed';
-          if (statusText.includes('check-in')) status = 'checked-in';
-          if (statusText.includes('check-out')) status = 'checked-out';
-          if (statusText.includes('cancel')) status = 'cancelled';
-
-          // VALIDACIÓN FINAL: Debe tener datos mínimos
-          if (!nombre && !bookingId) {
-            return null; // No es una reserva válida
-          }
-          
-          // Validar que el nombre no sea un elemento de UI
-          if (nombre && !isValidName(nombre)) {
-            nombre = ''; // Invalidar el nombre
-          }
-          
-          // Si no hay nombre válido pero hay booking ID y fechas, es válida
-          if (!nombre && bookingId && checkInDate) {
-            nombre = 'Unknown'; // Permitir reservas sin nombre si tienen otros datos
-          }
-
-          return {
-            nombre: nombre || 'Unknown',
-            bookingId: bookingId || null,
-            checkInDate,
-            checkOutDate,
-            checkInTime,
-            checkOutTime,
-            bookingDate,
-            noches,
-            adultos,
-            ninos,
-            personas,
-            habitacion,
-            total,
-            paid,
-            balance,
-            status,
-            rawText: allText.substring(0, 500) // Solo para debugging, limitado
-          };
-        } catch (error) {
-          console.error('Error extrayendo reserva:', error);
-          return null;
-        }
-      };
-      
-      // Buscar tarjetas de reserva - MEJORADO
-      // Primero buscar solo .MuiCard-root (más específico)
-      let cards = Array.from(document.querySelectorAll('.MuiCard-root'));
-      
-      // Si no hay, buscar alternativas
-      if (cards.length === 0) {
-        cards = Array.from(document.querySelectorAll('.MuiPaper-root'));
-      }
-      
-      // Si aún no hay, buscar divs con clases específicas
-      if (cards.length === 0) {
-        cards = Array.from(document.querySelectorAll('div[class*="sc-"]'));
-      }
-      
-      const reservations = [];
-      
-      cards.forEach(card => {
-        const text = card.textContent || '';
+          return data;
+        });
         
-        // Validación más estricta: debe tener múltiples indicadores de reserva
-        const isReservationCard = (
-          text.includes('Nights') && 
-          (text.includes('Booking Date') || text.match(/\d{2}\/\d{2}\/\d{4}/)) &&
-          (text.includes('Total') || text.includes('Me$') || text.includes('Mex$'))
-        );
+        // 4. Agregar noches extraídas de la tarjeta
+        reservationData.noches = noches;
+        reservationData.personas = reservationData.adultos + reservationData.ninos;
         
-        if (isReservationCard) {
-          const reservation = extractReservation(card);
-          if (reservation && (reservation.nombre !== 'Unknown' || reservation.bookingId || reservation.checkInDate)) {
-            reservations.push(reservation);
+        // 5. Cerrar el popup (buscar botón X o presionar ESC)
+        try {
+          const closeButton = await page.$('button[aria-label="Close"], button:has-text("×"), [class*="close"], [class*="Close"]');
+          if (closeButton) {
+            await closeButton.click();
+          } else {
+            // Intentar presionar ESC
+            await page.keyboard.press('Escape');
           }
+          await page.waitForTimeout(500);
+        } catch (e) {
+          console.log(`   ⚠️ Could not close popup: ${e.message}`);
+          // Intentar ESC de todas formas
+          await page.keyboard.press('Escape');
+          await page.waitForTimeout(500);
         }
-      });
-      
-      return reservations;
-    });
+        
+        // 6. Agregar a resultados
+        if (reservationData.nombre || reservationData.reservationNumber) {
+          results.reservations.push({
+            nombre: reservationData.nombre || 'Unknown',
+            telefono: reservationData.telefono,
+            correo: reservationData.correo,
+            bookingId: reservationData.reservationNumber ? 
+              (reservationData.voucherNumber ? 
+                `${reservationData.reservationNumber} | ${reservationData.voucherNumber}` : 
+                reservationData.reservationNumber) : null,
+            reservationNumber: reservationData.reservationNumber,
+            voucherNumber: reservationData.voucherNumber,
+            checkInDate: reservationData.arrivalDate ? reservationData.arrivalDate.split(' ')[0] : null,
+            checkOutDate: reservationData.departureDate ? reservationData.departureDate.split(' ')[0] : null,
+            checkInTime: reservationData.arrivalDate ? reservationData.arrivalDate.split(' ').slice(1).join(' ') : null,
+            checkOutTime: reservationData.departureDate ? reservationData.departureDate.split(' ').slice(1).join(' ') : null,
+            bookingDate: reservationData.bookingDate ? reservationData.bookingDate.split(' ')[0] : null,
+            noches: reservationData.noches,
+            adultos: reservationData.adultos,
+            ninos: reservationData.ninos,
+            personas: reservationData.personas,
+            habitacion: reservationData.roomNumber || reservationData.roomType,
+            roomType: reservationData.roomType,
+            roomNumber: reservationData.roomNumber,
+            total: reservationData.total,
+            paid: reservationData.paid,
+            balance: reservationData.balance,
+            status: reservationData.status || 'pending'
+          });
+          console.log(`   ✅ Reservation extracted: ${reservationData.nombre || reservationData.reservationNumber}`);
+        } else {
+          console.log(`   ⚠️ Skipped reservation ${i + 1} (no valid data)`);
+        }
+        
+      } catch (error) {
+        console.error(`   ❌ Error processing reservation ${i + 1}:`, error.message);
+        // Intentar cerrar popup si está abierto
+        try {
+          await page.keyboard.press('Escape');
+          await page.waitForTimeout(500);
+        } catch (e) {}
+      }
+    }
     
     console.log(`✅ Found ${results.reservations.length} reservations`);
 
@@ -429,204 +321,15 @@ async function scrapeAllEzeeImproved(page) {
     await page.waitForTimeout(3000);
     
     results.arrivals = await page.evaluate(() => {
-      const invalidNames = [
-        'Make Group', 'Export', 'Search', 'Mini Rooms', 'Illusion',
-        'Reservations', 'Arrivals', 'Departures', 'In-house',
-        'Booking Date', 'Total', 'Paid', 'Balance', 'Nights',
-        'Room', 'Check', 'Confirm', 'Assign Room'
-      ];
-      
-      const isValidName = (name) => {
-        if (!name || name.length < 3) return false;
-        const lowerName = name.toLowerCase();
-        return !invalidNames.some(invalid => lowerName.includes(invalid.toLowerCase()));
-      };
-      
-      const extractReservation = (card) => {
-        try {
-          const allText = card.textContent || '';
-          const hasRequiredData = (
-            allText.includes('Nights') && 
-            (allText.includes('Booking Date') || allText.match(/\d{2}\/\d{2}\/\d{4}/)) &&
-            (allText.includes('Total') || allText.includes('Me$') || allText.includes('Mex$'))
-          );
-          if (!hasRequiredData) return null;
-          if (card.tagName === 'BUTTON' || card.closest('button') || card.closest('header') ||
-              (allText.includes('Make Group') && !allText.includes('Nights'))) return null;
-          
-          let nombre = '';
-          const nameElements = card.querySelectorAll('h6, .MuiTypography-h6, [class*="Typography-h6"]');
-          for (const el of nameElements) {
-            const text = el.textContent?.trim() || '';
-            if (isValidName(text) && text.length > 3 && text.length < 60) {
-              nombre = text;
-              break;
-            }
-          }
-          if (!nombre) {
-            const titleMatch = allText.match(/(?:Mr\.|Ms\.|Mrs\.|Dr\.|Miss|Mister)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,4})/);
-            if (titleMatch && isValidName(titleMatch[0])) nombre = titleMatch[0].trim();
-          }
-          if (!nombre) {
-            const namePattern = /([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})/g;
-            const matches = allText.match(namePattern);
-            if (matches) {
-              for (const match of matches) {
-                const trimmed = match.trim();
-                if (isValidName(trimmed) && trimmed.length > 5 && trimmed.length < 50) {
-                  nombre = trimmed;
-                  break;
-                }
-              }
-            }
-          }
-          if (!nombre) {
-            const lines = allText.split(/\n|(?:\s{2,})/).filter(l => l.trim());
-            for (const line of lines.slice(0, 8)) {
-              const trimmed = line.trim();
-              if (isValidName(trimmed) && trimmed.length > 5 && trimmed.length < 50 && 
-                  /^[A-Z]/.test(trimmed) && !trimmed.match(/^\d|^\d{2}\/\d{2}\/\d{4}/)) {
-                nombre = trimmed;
-                break;
-              }
-            }
-          }
-          
-          let bookingId = '';
-          const bookingIdElements = card.querySelectorAll('.MuiTypography-body2, [class*="Typography-body2"]');
-          for (const el of bookingIdElements) {
-            const text = el.textContent?.trim() || '';
-            if (text.match(/\d+\s*[|]\s*[A-Z0-9/]+/)) {
-              bookingId = text;
-              break;
-            }
-          }
-          
-          const dateMatches = allText.match(/(\d{2}\/\d{2}\/\d{4})/g) || [];
-          const checkInDate = dateMatches[0] || null;
-          const checkOutDate = dateMatches[1] || null;
-          const bookingDate = dateMatches[2] || null;
-          const timeMatches = allText.match(/(\d{1,2}:\d{2}:\d{2}\s*(?:AM|PM))/gi) || [];
-          const checkInTime = timeMatches[0] || null;
-          const checkOutTime = timeMatches[1] || null;
-          const nightsMatch = allText.match(/(\d+)\s*Nights?/i);
-          const noches = nightsMatch ? parseInt(nightsMatch[1]) : 0;
-          
-          let adultos = 0;
-          let ninos = 0;
-          const adultIcons = card.querySelectorAll('[id*="adult"], [id*="Adult"], [alt*="adult"], [alt*="Adult"], [class*="adult"], [class*="Adult"]');
-          const childIcons = card.querySelectorAll('[id*="child"], [id*="Child"], [alt*="child"], [alt*="Child"], [class*="child"], [class*="Child"]');
-          if (adultIcons.length > 0) {
-            adultIcons.forEach(icon => {
-              const nextSibling = icon.nextSibling;
-              if (nextSibling && nextSibling.textContent) {
-                const num = parseInt(nextSibling.textContent.trim());
-                if (!isNaN(num) && num > 0) adultos = num;
-              }
-              const parent = icon.parentElement;
-              if (parent) {
-                const parentText = parent.textContent || '';
-                const match = parentText.match(/(\d+)\s*(?:Adults?|Adult)/i);
-                if (match) adultos = parseInt(match[1]);
-              }
-            });
-          }
-          if (childIcons.length > 0) {
-            childIcons.forEach(icon => {
-              const nextSibling = icon.nextSibling;
-              if (nextSibling && nextSibling.textContent) {
-                const num = parseInt(nextSibling.textContent.trim());
-                if (!isNaN(num) && num >= 0) ninos = num;
-              }
-              const parent = icon.parentElement;
-              if (parent) {
-                const parentText = parent.textContent || '';
-                const match = parentText.match(/(\d+)\s*(?:Child|Children)/i);
-                if (match) ninos = parseInt(match[1]);
-              }
-            });
-          }
-          if (adultos === 0) {
-            const adultsMatch = allText.match(/(\d+)\s*(?:Adults?|Adult)/i);
-            if (adultsMatch) adultos = parseInt(adultsMatch[1]);
-          }
-          if (ninos === 0) {
-            const childrenMatch = allText.match(/(\d+)\s*(?:Child|Children)/i);
-            if (childrenMatch) ninos = parseInt(childrenMatch[1]);
-          }
-          if (adultos === 0 && ninos === 0) {
-            const guestPattern = allText.match(/(\d+)\s+(\d+)\s*(?:Room|Adults?|Person)/i);
-            if (guestPattern) {
-              adultos = parseInt(guestPattern[1]);
-              ninos = parseInt(guestPattern[2]);
-            }
-          }
-          const personas = adultos + ninos;
-          const roomMatch = allText.match(/S\s*(\d+)/i) || allText.match(/Room\s*Type[^/]*\/\s*([^/]+)/i);
-          const habitacion = roomMatch ? (roomMatch[0].includes('S ') ? `S ${roomMatch[1]}` : roomMatch[1].trim()) : null;
-          const totalMatch = allText.match(/Total[^\d]*([\d,]+\.?\d*)/i) || allText.match(/Total[^M]*Me?\$?\s*([\d,]+\.?\d*)/i);
-          const paidMatch = allText.match(/Paid[^\d]*([\d,]+\.?\d*)/i) || allText.match(/Paid[^M]*Me?\$?\s*([\d,]+\.?\d*)/i);
-          const balanceMatch = allText.match(/Balance[^\d]*([\d,]+\.?\d*)/i) || allText.match(/Balance[^M]*Me?\$?\s*([\d,]+\.?\d*)/i);
-          const total = totalMatch ? parseFloat(totalMatch[1].replace(/,/g, '')) : 0;
-          const paid = paidMatch ? parseFloat(paidMatch[1].replace(/,/g, '')) : 0;
-          const balance = balanceMatch ? parseFloat(balanceMatch[1].replace(/,/g, '')) : 0;
-          const statusText = allText.toLowerCase();
-          let status = 'pending';
-          if (statusText.includes('confirm')) status = 'confirmed';
-          if (statusText.includes('check-in')) status = 'checked-in';
-          if (statusText.includes('check-out')) status = 'checked-out';
-          if (statusText.includes('cancel')) status = 'cancelled';
-          if (!nombre && !bookingId) return null;
-          if (nombre && !isValidName(nombre)) nombre = '';
-          if (!nombre && bookingId && checkInDate) nombre = 'Unknown';
-          
-          return {
-            nombre: nombre || 'Unknown',
-            bookingId: bookingId || null,
-            checkInDate,
-            checkOutDate,
-            checkInTime,
-            checkOutTime,
-            bookingDate,
-            noches,
-            adultos,
-            ninos,
-            personas,
-            habitacion,
-            total,
-            paid,
-            balance,
-            status
-          };
-        } catch (e) { return null; }
-      };
-      
-      let cards = Array.from(document.querySelectorAll('.MuiCard-root'));
-      if (cards.length === 0) cards = Array.from(document.querySelectorAll('.MuiPaper-root'));
-      if (cards.length === 0) cards = Array.from(document.querySelectorAll('div[class*="sc-"]'));
-      
-      const arrivals = [];
-      cards.forEach(card => {
-        const text = card.textContent || '';
-        const isReservationCard = (
-          text.includes('Nights') && 
-          (text.includes('Booking Date') || text.match(/\d{2}\/\d{2}\/\d{4}/)) &&
-          (text.includes('Total') || text.includes('Me$') || text.includes('Mex$'))
-        );
-        if (isReservationCard) {
-          const reservation = extractReservation(card);
-          if (reservation && (reservation.nombre !== 'Unknown' || reservation.bookingId || reservation.checkInDate)) {
-            arrivals.push(reservation);
-          }
-        }
-      });
-      return arrivals;
+      // TODO: Implementar scraping de arrivals con la misma estrategia (click en tarjetas)
+      // Por ahora retornar array vacío
+      return [];
     });
     
     console.log(`✅ Found ${results.arrivals.length} arrivals`);
 
     // ==================== DEPARTURES ====================
-    console.log('\n🚪 Scraping DEPARTURES...');
+    console.log('\n✈️ Scraping DEPARTURES...');
     await page.evaluate(() => {
       const tabs = Array.from(document.querySelectorAll('div.ant-tabs-tab, button[role="tab"]'));
       const departuresTab = tabs.find(tab => tab.textContent.includes('Departures'));
@@ -636,198 +339,9 @@ async function scrapeAllEzeeImproved(page) {
     await page.waitForTimeout(3000);
     
     results.departures = await page.evaluate(() => {
-      const invalidNames = [
-        'Make Group', 'Export', 'Search', 'Mini Rooms', 'Illusion',
-        'Reservations', 'Arrivals', 'Departures', 'In-house',
-        'Booking Date', 'Total', 'Paid', 'Balance', 'Nights',
-        'Room', 'Check', 'Confirm', 'Assign Room'
-      ];
-      
-      const isValidName = (name) => {
-        if (!name || name.length < 3) return false;
-        const lowerName = name.toLowerCase();
-        return !invalidNames.some(invalid => lowerName.includes(invalid.toLowerCase()));
-      };
-      
-      const extractReservation = (card) => {
-        try {
-          const allText = card.textContent || '';
-          const hasRequiredData = (
-            allText.includes('Nights') && 
-            (allText.includes('Booking Date') || allText.match(/\d{2}\/\d{2}\/\d{4}/)) &&
-            (allText.includes('Total') || allText.includes('Me$') || allText.includes('Mex$'))
-          );
-          if (!hasRequiredData) return null;
-          if (card.tagName === 'BUTTON' || card.closest('button') || card.closest('header') ||
-              (allText.includes('Make Group') && !allText.includes('Nights'))) return null;
-          
-          let nombre = '';
-          const nameElements = card.querySelectorAll('h6, .MuiTypography-h6, [class*="Typography-h6"]');
-          for (const el of nameElements) {
-            const text = el.textContent?.trim() || '';
-            if (isValidName(text) && text.length > 3 && text.length < 60) {
-              nombre = text;
-              break;
-            }
-          }
-          if (!nombre) {
-            const titleMatch = allText.match(/(?:Mr\.|Ms\.|Mrs\.|Dr\.|Miss|Mister)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,4})/);
-            if (titleMatch && isValidName(titleMatch[0])) nombre = titleMatch[0].trim();
-          }
-          if (!nombre) {
-            const namePattern = /([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})/g;
-            const matches = allText.match(namePattern);
-            if (matches) {
-              for (const match of matches) {
-                const trimmed = match.trim();
-                if (isValidName(trimmed) && trimmed.length > 5 && trimmed.length < 50) {
-                  nombre = trimmed;
-                  break;
-                }
-              }
-            }
-          }
-          if (!nombre) {
-            const lines = allText.split(/\n|(?:\s{2,})/).filter(l => l.trim());
-            for (const line of lines.slice(0, 8)) {
-              const trimmed = line.trim();
-              if (isValidName(trimmed) && trimmed.length > 5 && trimmed.length < 50 && 
-                  /^[A-Z]/.test(trimmed) && !trimmed.match(/^\d|^\d{2}\/\d{2}\/\d{4}/)) {
-                nombre = trimmed;
-                break;
-              }
-            }
-          }
-          
-          let bookingId = '';
-          const bookingIdElements = card.querySelectorAll('.MuiTypography-body2, [class*="Typography-body2"]');
-          for (const el of bookingIdElements) {
-            const text = el.textContent?.trim() || '';
-            if (text.match(/\d+\s*[|]\s*[A-Z0-9/]+/)) {
-              bookingId = text;
-              break;
-            }
-          }
-          
-          const dateMatches = allText.match(/(\d{2}\/\d{2}\/\d{4})/g) || [];
-          const checkInDate = dateMatches[0] || null;
-          const checkOutDate = dateMatches[1] || null;
-          const bookingDate = dateMatches[2] || null;
-          const timeMatches = allText.match(/(\d{1,2}:\d{2}:\d{2}\s*(?:AM|PM))/gi) || [];
-          const checkInTime = timeMatches[0] || null;
-          const checkOutTime = timeMatches[1] || null;
-          const nightsMatch = allText.match(/(\d+)\s*Nights?/i);
-          const noches = nightsMatch ? parseInt(nightsMatch[1]) : 0;
-          
-          let adultos = 0;
-          let ninos = 0;
-          const adultIcons = card.querySelectorAll('[id*="adult"], [id*="Adult"], [alt*="adult"], [alt*="Adult"], [class*="adult"], [class*="Adult"]');
-          const childIcons = card.querySelectorAll('[id*="child"], [id*="Child"], [alt*="child"], [alt*="Child"], [class*="child"], [class*="Child"]');
-          if (adultIcons.length > 0) {
-            adultIcons.forEach(icon => {
-              const nextSibling = icon.nextSibling;
-              if (nextSibling && nextSibling.textContent) {
-                const num = parseInt(nextSibling.textContent.trim());
-                if (!isNaN(num) && num > 0) adultos = num;
-              }
-              const parent = icon.parentElement;
-              if (parent) {
-                const parentText = parent.textContent || '';
-                const match = parentText.match(/(\d+)\s*(?:Adults?|Adult)/i);
-                if (match) adultos = parseInt(match[1]);
-              }
-            });
-          }
-          if (childIcons.length > 0) {
-            childIcons.forEach(icon => {
-              const nextSibling = icon.nextSibling;
-              if (nextSibling && nextSibling.textContent) {
-                const num = parseInt(nextSibling.textContent.trim());
-                if (!isNaN(num) && num >= 0) ninos = num;
-              }
-              const parent = icon.parentElement;
-              if (parent) {
-                const parentText = parent.textContent || '';
-                const match = parentText.match(/(\d+)\s*(?:Child|Children)/i);
-                if (match) ninos = parseInt(match[1]);
-              }
-            });
-          }
-          if (adultos === 0) {
-            const adultsMatch = allText.match(/(\d+)\s*(?:Adults?|Adult)/i);
-            if (adultsMatch) adultos = parseInt(adultsMatch[1]);
-          }
-          if (ninos === 0) {
-            const childrenMatch = allText.match(/(\d+)\s*(?:Child|Children)/i);
-            if (childrenMatch) ninos = parseInt(childrenMatch[1]);
-          }
-          if (adultos === 0 && ninos === 0) {
-            const guestPattern = allText.match(/(\d+)\s+(\d+)\s*(?:Room|Adults?|Person)/i);
-            if (guestPattern) {
-              adultos = parseInt(guestPattern[1]);
-              ninos = parseInt(guestPattern[2]);
-            }
-          }
-          const personas = adultos + ninos;
-          const roomMatch = allText.match(/S\s*(\d+)/i) || allText.match(/Room\s*Type[^/]*\/\s*([^/]+)/i);
-          const habitacion = roomMatch ? (roomMatch[0].includes('S ') ? `S ${roomMatch[1]}` : roomMatch[1].trim()) : null;
-          const totalMatch = allText.match(/Total[^\d]*([\d,]+\.?\d*)/i) || allText.match(/Total[^M]*Me?\$?\s*([\d,]+\.?\d*)/i);
-          const paidMatch = allText.match(/Paid[^\d]*([\d,]+\.?\d*)/i) || allText.match(/Paid[^M]*Me?\$?\s*([\d,]+\.?\d*)/i);
-          const balanceMatch = allText.match(/Balance[^\d]*([\d,]+\.?\d*)/i) || allText.match(/Balance[^M]*Me?\$?\s*([\d,]+\.?\d*)/i);
-          const total = totalMatch ? parseFloat(totalMatch[1].replace(/,/g, '')) : 0;
-          const paid = paidMatch ? parseFloat(paidMatch[1].replace(/,/g, '')) : 0;
-          const balance = balanceMatch ? parseFloat(balanceMatch[1].replace(/,/g, '')) : 0;
-          const statusText = allText.toLowerCase();
-          let status = 'pending';
-          if (statusText.includes('confirm')) status = 'confirmed';
-          if (statusText.includes('check-in')) status = 'checked-in';
-          if (statusText.includes('check-out')) status = 'checked-out';
-          if (statusText.includes('cancel')) status = 'cancelled';
-          if (!nombre && !bookingId) return null;
-          if (nombre && !isValidName(nombre)) nombre = '';
-          if (!nombre && bookingId && checkInDate) nombre = 'Unknown';
-          
-          return {
-            nombre: nombre || 'Unknown',
-            bookingId: bookingId || null,
-            checkInDate,
-            checkOutDate,
-            checkInTime,
-            checkOutTime,
-            bookingDate,
-            noches,
-            adultos,
-            ninos,
-            personas,
-            habitacion,
-            total,
-            paid,
-            balance,
-            status
-          };
-        } catch (e) { return null; }
-      };
-      
-      let cards = Array.from(document.querySelectorAll('.MuiCard-root'));
-      if (cards.length === 0) cards = Array.from(document.querySelectorAll('.MuiPaper-root'));
-      if (cards.length === 0) cards = Array.from(document.querySelectorAll('div[class*="sc-"]'));
-      
-      const departures = [];
-      cards.forEach(card => {
-        const text = card.textContent || '';
-        const isReservationCard = (
-          text.includes('Nights') && 
-          (text.includes('Booking Date') || text.match(/\d{2}\/\d{2}\/\d{4}/)) &&
-          (text.includes('Total') || text.includes('Me$') || text.includes('Mex$'))
-        );
-        if (isReservationCard) {
-          const reservation = extractReservation(card);
-          if (reservation && (reservation.nombre !== 'Unknown' || reservation.bookingId || reservation.checkInDate)) {
-            departures.push(reservation);
-          }
-        }
-      });
-      return departures;
+      // TODO: Implementar scraping de departures con la misma estrategia (click en tarjetas)
+      // Por ahora retornar array vacío
+      return [];
     });
     
     console.log(`✅ Found ${results.departures.length} departures`);
@@ -843,210 +357,21 @@ async function scrapeAllEzeeImproved(page) {
     await page.waitForTimeout(3000);
     
     results.inhouse = await page.evaluate(() => {
-      const invalidNames = [
-        'Make Group', 'Export', 'Search', 'Mini Rooms', 'Illusion',
-        'Reservations', 'Arrivals', 'Departures', 'In-house',
-        'Booking Date', 'Total', 'Paid', 'Balance', 'Nights',
-        'Room', 'Check', 'Confirm', 'Assign Room'
-      ];
-      
-      const isValidName = (name) => {
-        if (!name || name.length < 3) return false;
-        const lowerName = name.toLowerCase();
-        return !invalidNames.some(invalid => lowerName.includes(invalid.toLowerCase()));
-      };
-      
-      const extractReservation = (card) => {
-        try {
-          const allText = card.textContent || '';
-          const hasRequiredData = (
-            allText.includes('Nights') && 
-            (allText.includes('Booking Date') || allText.match(/\d{2}\/\d{2}\/\d{4}/)) &&
-            (allText.includes('Total') || allText.includes('Me$') || allText.includes('Mex$'))
-          );
-          if (!hasRequiredData) return null;
-          if (card.tagName === 'BUTTON' || card.closest('button') || card.closest('header') ||
-              (allText.includes('Make Group') && !allText.includes('Nights'))) return null;
-          
-          let nombre = '';
-          const nameElements = card.querySelectorAll('h6, .MuiTypography-h6, [class*="Typography-h6"]');
-          for (const el of nameElements) {
-            const text = el.textContent?.trim() || '';
-            if (isValidName(text) && text.length > 3 && text.length < 60) {
-              nombre = text;
-              break;
-            }
-          }
-          if (!nombre) {
-            const titleMatch = allText.match(/(?:Mr\.|Ms\.|Mrs\.|Dr\.|Miss|Mister)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,4})/);
-            if (titleMatch && isValidName(titleMatch[0])) nombre = titleMatch[0].trim();
-          }
-          if (!nombre) {
-            const namePattern = /([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})/g;
-            const matches = allText.match(namePattern);
-            if (matches) {
-              for (const match of matches) {
-                const trimmed = match.trim();
-                if (isValidName(trimmed) && trimmed.length > 5 && trimmed.length < 50) {
-                  nombre = trimmed;
-                  break;
-                }
-              }
-            }
-          }
-          if (!nombre) {
-            const lines = allText.split(/\n|(?:\s{2,})/).filter(l => l.trim());
-            for (const line of lines.slice(0, 8)) {
-              const trimmed = line.trim();
-              if (isValidName(trimmed) && trimmed.length > 5 && trimmed.length < 50 && 
-                  /^[A-Z]/.test(trimmed) && !trimmed.match(/^\d|^\d{2}\/\d{2}\/\d{4}/)) {
-                nombre = trimmed;
-                break;
-              }
-            }
-          }
-          
-          let bookingId = '';
-          const bookingIdElements = card.querySelectorAll('.MuiTypography-body2, [class*="Typography-body2"]');
-          for (const el of bookingIdElements) {
-            const text = el.textContent?.trim() || '';
-            if (text.match(/\d+\s*[|]\s*[A-Z0-9/]+/)) {
-              bookingId = text;
-              break;
-            }
-          }
-          
-          const dateMatches = allText.match(/(\d{2}\/\d{2}\/\d{4})/g) || [];
-          const checkInDate = dateMatches[0] || null;
-          const checkOutDate = dateMatches[1] || null;
-          const bookingDate = dateMatches[2] || null;
-          const timeMatches = allText.match(/(\d{1,2}:\d{2}:\d{2}\s*(?:AM|PM))/gi) || [];
-          const checkInTime = timeMatches[0] || null;
-          const checkOutTime = timeMatches[1] || null;
-          const nightsMatch = allText.match(/(\d+)\s*Nights?/i);
-          const noches = nightsMatch ? parseInt(nightsMatch[1]) : 0;
-          
-          let adultos = 0;
-          let ninos = 0;
-          const adultIcons = card.querySelectorAll('[id*="adult"], [id*="Adult"], [alt*="adult"], [alt*="Adult"], [class*="adult"], [class*="Adult"]');
-          const childIcons = card.querySelectorAll('[id*="child"], [id*="Child"], [alt*="child"], [alt*="Child"], [class*="child"], [class*="Child"]');
-          if (adultIcons.length > 0) {
-            adultIcons.forEach(icon => {
-              const nextSibling = icon.nextSibling;
-              if (nextSibling && nextSibling.textContent) {
-                const num = parseInt(nextSibling.textContent.trim());
-                if (!isNaN(num) && num > 0) adultos = num;
-              }
-              const parent = icon.parentElement;
-              if (parent) {
-                const parentText = parent.textContent || '';
-                const match = parentText.match(/(\d+)\s*(?:Adults?|Adult)/i);
-                if (match) adultos = parseInt(match[1]);
-              }
-            });
-          }
-          if (childIcons.length > 0) {
-            childIcons.forEach(icon => {
-              const nextSibling = icon.nextSibling;
-              if (nextSibling && nextSibling.textContent) {
-                const num = parseInt(nextSibling.textContent.trim());
-                if (!isNaN(num) && num >= 0) ninos = num;
-              }
-              const parent = icon.parentElement;
-              if (parent) {
-                const parentText = parent.textContent || '';
-                const match = parentText.match(/(\d+)\s*(?:Child|Children)/i);
-                if (match) ninos = parseInt(match[1]);
-              }
-            });
-          }
-          if (adultos === 0) {
-            const adultsMatch = allText.match(/(\d+)\s*(?:Adults?|Adult)/i);
-            if (adultsMatch) adultos = parseInt(adultsMatch[1]);
-          }
-          if (ninos === 0) {
-            const childrenMatch = allText.match(/(\d+)\s*(?:Child|Children)/i);
-            if (childrenMatch) ninos = parseInt(childrenMatch[1]);
-          }
-          if (adultos === 0 && ninos === 0) {
-            const guestPattern = allText.match(/(\d+)\s+(\d+)\s*(?:Room|Adults?|Person)/i);
-            if (guestPattern) {
-              adultos = parseInt(guestPattern[1]);
-              ninos = parseInt(guestPattern[2]);
-            }
-          }
-          const personas = adultos + ninos;
-          const roomMatch = allText.match(/S\s*(\d+)/i) || allText.match(/Room\s*Type[^/]*\/\s*([^/]+)/i);
-          const habitacion = roomMatch ? (roomMatch[0].includes('S ') ? `S ${roomMatch[1]}` : roomMatch[1].trim()) : null;
-          const totalMatch = allText.match(/Total[^\d]*([\d,]+\.?\d*)/i) || allText.match(/Total[^M]*Me?\$?\s*([\d,]+\.?\d*)/i);
-          const paidMatch = allText.match(/Paid[^\d]*([\d,]+\.?\d*)/i) || allText.match(/Paid[^M]*Me?\$?\s*([\d,]+\.?\d*)/i);
-          const balanceMatch = allText.match(/Balance[^\d]*([\d,]+\.?\d*)/i) || allText.match(/Balance[^M]*Me?\$?\s*([\d,]+\.?\d*)/i);
-          const total = totalMatch ? parseFloat(totalMatch[1].replace(/,/g, '')) : 0;
-          const paid = paidMatch ? parseFloat(paidMatch[1].replace(/,/g, '')) : 0;
-          const balance = balanceMatch ? parseFloat(balanceMatch[1].replace(/,/g, '')) : 0;
-          const statusText = allText.toLowerCase();
-          let status = 'pending';
-          if (statusText.includes('confirm')) status = 'confirmed';
-          if (statusText.includes('check-in')) status = 'checked-in';
-          if (statusText.includes('check-out')) status = 'checked-out';
-          if (statusText.includes('cancel')) status = 'cancelled';
-          if (!nombre && !bookingId) return null;
-          if (nombre && !isValidName(nombre)) nombre = '';
-          if (!nombre && bookingId && checkInDate) nombre = 'Unknown';
-          
-          return {
-            nombre: nombre || 'Unknown',
-            bookingId: bookingId || null,
-            checkInDate,
-            checkOutDate,
-            checkInTime,
-            checkOutTime,
-            bookingDate,
-            noches,
-            adultos,
-            ninos,
-            personas,
-            habitacion,
-            total,
-            paid,
-            balance,
-            status
-          };
-        } catch (e) { return null; }
-      };
-      
-      let cards = Array.from(document.querySelectorAll('.MuiCard-root'));
-      if (cards.length === 0) cards = Array.from(document.querySelectorAll('.MuiPaper-root'));
-      if (cards.length === 0) cards = Array.from(document.querySelectorAll('div[class*="sc-"]'));
-      
-      const inhouse = [];
-      cards.forEach(card => {
-        const text = card.textContent || '';
-        const isReservationCard = (
-          text.includes('Nights') && 
-          (text.includes('Booking Date') || text.match(/\d{2}\/\d{2}\/\d{4}/)) &&
-          (text.includes('Total') || text.includes('Me$') || text.includes('Mex$'))
-        );
-        if (isReservationCard) {
-          const reservation = extractReservation(card);
-          if (reservation && (reservation.nombre !== 'Unknown' || reservation.bookingId || reservation.checkInDate)) {
-            inhouse.push(reservation);
-          }
-        }
-      });
-      return inhouse;
+      // TODO: Implementar scraping de inhouse con la misma estrategia (click en tarjetas)
+      // Por ahora retornar array vacío
+      return [];
     });
     
-    console.log(`✅ Found ${results.inhouse.length} in-house guests`);
+    console.log(`✅ Found ${results.inhouse.length} in-house reservations`);
 
     // ==================== STAYVIEW ====================
-    console.log('\n📅 Scraping STAYVIEW...');
+    console.log('\n📊 Scraping STAYVIEW...');
     await page.goto('https://live.ipms247.com/frontoffice/stayview', {
       waitUntil: 'networkidle2',
       timeout: 60000
     });
     
-    await page.waitForTimeout(5000);
+    await page.waitForTimeout(3000);
     
     const stayviewData = await page.evaluate(() => {
       const data = {
@@ -1055,42 +380,15 @@ async function scrapeAllEzeeImproved(page) {
         stats: {}
       };
       
-      // Extraer estadísticas del header
-      try {
-        const statElements = document.querySelectorAll('[class*="stat"], .badge, [class*="count"]');
-        const allStatsText = Array.from(statElements).map(el => el.textContent?.trim()).join(' ');
-        
-        // Extraer números de las estadísticas
-        const allMatch = allStatsText.match(/All[^\d]*(\d+)/i);
-        const vacantMatch = allStatsText.match(/Vacant[^\d]*(\d+)/i);
-        const occupiedMatch = allStatsText.match(/Occupied[^\d]*(\d+)/i);
-        const reservedMatch = allStatsText.match(/Reserved[^\d]*(\d+)/i);
-        const blockedMatch = allStatsText.match(/Blocked[^\d]*(\d+)/i);
-        const dueOutMatch = allStatsText.match(/Due\s*Out[^\d]*(\d+)/i);
-        const dirtyMatch = allStatsText.match(/Dirty[^\d]*(\d+)/i);
-        
-        data.stats = {
-          all: allMatch ? parseInt(allMatch[1]) : 0,
-          vacant: vacantMatch ? parseInt(vacantMatch[1]) : 0,
-          occupied: occupiedMatch ? parseInt(occupiedMatch[1]) : 0,
-          reserved: reservedMatch ? parseInt(reservedMatch[1]) : 0,
-          blocked: blockedMatch ? parseInt(blockedMatch[1]) : 0,
-          dueOut: dueOutMatch ? parseInt(dueOutMatch[1]) : 0,
-          dirty: dirtyMatch ? parseInt(dirtyMatch[1]) : 0
-        };
-      } catch (e) {
-        console.error('Error extracting stats:', e);
-      }
-      
-      // Extraer Room Availability
+      // Extraer Availability
       try {
         const availabilityRow = Array.from(document.querySelectorAll('td.ant-table-cell')).find(
-          cell => cell.textContent?.includes('Room Availability')
+          cell => cell.textContent?.includes('Availability')
         );
         
         if (availabilityRow) {
           const row = availabilityRow.closest('tr');
-          const cells = row?.querySelectorAll('td.ant-table-cell.occupancy-cell, td.ant-table-cell.ant-table-cell-ellipsis');
+          const cells = row?.querySelectorAll('td.ant-table-cell.availability-cell, td.ant-table-cell.ant-table-cell-ellipsis');
           
           cells?.forEach((cell, index) => {
             const value = cell.textContent?.trim();
