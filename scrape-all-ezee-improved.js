@@ -17,10 +17,27 @@ async function scrapeCardsFromSection(page, sectionName, cardSelector = 'div.sc-
       console.log(`\n📋 Processing ${sectionName} ${i + 1}/${cardHandles.length}...`);
       
       // Obtener la tarjeta nuevamente (por si el DOM cambió)
+      // Esperar a que las tarjetas estén cargadas
+      try {
+        await page.waitForSelector(cardSelector, { timeout: 5000 });
+      } catch (e) {
+        console.log(`   ⚠️ Cards not found, waiting...`);
+        await page.waitForTimeout(2000);
+      }
+      
       const cards = await page.$$(cardSelector);
-      if (i >= cards.length) break;
+      if (i >= cards.length) {
+        console.log(`   ⚠️ Card index ${i + 1} out of range (total: ${cards.length})`);
+        break;
+      }
       
       const card = cards[i];
+      
+      // Verificar que la tarjeta existe
+      if (!card) {
+        console.log(`   ⚠️ Card ${i + 1} is null, skipping...`);
+        continue;
+      }
       
       // 1. Extraer "noches" de la tarjeta ANTES de hacer click
       let noches = 0;
@@ -39,8 +56,102 @@ async function scrapeCardsFromSection(page, sectionName, cardSelector = 'div.sc-
       }
       
       // 2. Hacer click en la tarjeta para abrir el popup
-      await card.click();
-      await page.waitForTimeout(1500); // Esperar a que se abra el popup
+      try {
+        // Verificar que el elemento existe y es visible
+        const isVisible = await page.evaluate((element) => {
+          if (!element) return false;
+          const rect = element.getBoundingClientRect();
+          const style = window.getComputedStyle(element);
+          return (
+            rect.width > 0 &&
+            rect.height > 0 &&
+            style.display !== 'none' &&
+            style.visibility !== 'hidden' &&
+            style.opacity !== '0'
+          );
+        }, card);
+        
+        if (!isVisible) {
+          // Hacer scroll hasta el elemento
+          await page.evaluate((element) => {
+            element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }, card);
+          await page.waitForTimeout(500);
+        }
+        
+        // Esperar a que el elemento sea clickeable usando índice en lugar de pasar el elemento
+        const cardIndex = i;
+        await page.waitForFunction(
+          (selector, index) => {
+            const cards = Array.from(document.querySelectorAll(selector));
+            if (index >= cards.length) return false;
+            const element = cards[index];
+            if (!element) return false;
+            const rect = element.getBoundingClientRect();
+            const style = window.getComputedStyle(element);
+            return (
+              rect.width > 0 &&
+              rect.height > 0 &&
+              style.display !== 'none' &&
+              style.visibility !== 'hidden' &&
+              style.opacity !== '0' &&
+              style.pointerEvents !== 'none'
+            );
+          },
+          { timeout: 5000 },
+          cardSelector,
+          cardIndex
+        );
+        
+        // Re-obtener la tarjeta después de la espera (por si el DOM cambió)
+        const cardsAfterWait = await page.$$(cardSelector);
+        if (cardIndex >= cardsAfterWait.length) {
+          throw new Error(`Card index ${cardIndex + 1} out of range after wait`);
+        }
+        const cardToClick = cardsAfterWait[cardIndex];
+        
+        // Intentar hacer click con múltiples estrategias
+        let clickSuccess = false;
+        try {
+          // Estrategia 1: Click normal de Puppeteer
+          await cardToClick.click({ delay: 100 });
+          clickSuccess = true;
+        } catch (clickError1) {
+          try {
+            // Estrategia 2: JavaScript click directo
+            await page.evaluate((selector, index) => {
+              const cards = Array.from(document.querySelectorAll(selector));
+              if (index < cards.length && cards[index]) {
+                cards[index].click();
+              }
+            }, cardSelector, cardIndex);
+            clickSuccess = true;
+          } catch (clickError2) {
+            try {
+              // Estrategia 3: Click en el centro del elemento
+              const box = await cardToClick.boundingBox();
+              if (box) {
+                await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+                clickSuccess = true;
+              } else {
+                throw new Error('Element has no bounding box');
+              }
+            } catch (clickError3) {
+              throw new Error(`All click strategies failed: ${clickError1.message}, ${clickError2.message}, ${clickError3.message}`);
+            }
+          }
+        }
+        
+        await page.waitForTimeout(1500); // Esperar a que se abra el popup
+      } catch (clickError) {
+        console.log(`   ⚠️ Error clicking card ${i + 1}: ${clickError.message}`);
+        // Intentar cerrar cualquier popup que pueda estar abierto
+        try {
+          await page.keyboard.press('Escape');
+          await page.waitForTimeout(500);
+        } catch (e) {}
+        throw clickError; // Re-lanzar el error para que se maneje en el catch externo
+      }
       
       // 3. Extraer todos los datos del popup (misma lógica que Reservations)
       const cardData = await page.evaluate(() => {
@@ -288,17 +399,69 @@ async function scrapeCardsFromSection(page, sectionName, cardSelector = 'div.sc-
       
       // 5. Cerrar el popup
       try {
-        const closeButton = await page.$('button[aria-label="Close"], button:has-text("×"), [class*="close"], [class*="Close"]');
+        // Esperar un momento antes de intentar cerrar
+        await page.waitForTimeout(300);
+        
+        // Buscar botón de cerrar con múltiples selectores
+        const closeButton = await page.$('button[aria-label="Close"], button[aria-label="close"], button:has-text("×"), [class*="close"], [class*="Close"], .ant-modal-close');
+        
         if (closeButton) {
-          await closeButton.click();
+          try {
+            // Verificar que el botón es visible y clickeable
+            const isVisible = await page.evaluate((btn) => {
+              if (!btn) return false;
+              const rect = btn.getBoundingClientRect();
+              const style = window.getComputedStyle(btn);
+              return (
+                rect.width > 0 &&
+                rect.height > 0 &&
+                style.display !== 'none' &&
+                style.visibility !== 'hidden'
+              );
+            }, closeButton);
+            
+            if (isVisible) {
+              await closeButton.click({ delay: 100 });
+            } else {
+              await page.keyboard.press('Escape');
+            }
+          } catch (btnError) {
+            // Si falla el click del botón, usar ESC
+            await page.keyboard.press('Escape');
+          }
         } else {
+          // Si no hay botón, usar ESC
           await page.keyboard.press('Escape');
         }
+        
         await page.waitForTimeout(500);
+        
+        // Verificar que el popup se cerró (esperar a que desaparezca)
+        try {
+          await page.waitForFunction(
+            () => {
+              const modals = document.querySelectorAll('[class*="modal"], [class*="Modal"], [role="dialog"]');
+              return Array.from(modals).every(modal => {
+                const style = window.getComputedStyle(modal);
+                return style.display === 'none' || style.visibility === 'hidden' || !modal.offsetParent;
+              });
+            },
+            { timeout: 2000 }
+          );
+        } catch (e) {
+          // Si no se cierra, intentar ESC de nuevo
+          await page.keyboard.press('Escape');
+          await page.waitForTimeout(500);
+        }
       } catch (e) {
         console.log(`   ⚠️ Could not close popup: ${e.message}`);
-        await page.keyboard.press('Escape');
-        await page.waitForTimeout(500);
+        // Último intento con ESC
+        try {
+          await page.keyboard.press('Escape');
+          await page.waitForTimeout(500);
+        } catch (escError) {
+          // Ignorar si también falla
+        }
       }
       
       // 6. Agregar a resultados
@@ -337,10 +500,36 @@ async function scrapeCardsFromSection(page, sectionName, cardSelector = 'div.sc-
       
     } catch (error) {
       console.error(`   ❌ Error processing ${sectionName} ${i + 1}:`, error.message);
+      
+      // Limpiar cualquier popup o overlay que pueda estar abierto
       try {
-        await page.keyboard.press('Escape');
-        await page.waitForTimeout(500);
-      } catch (e) {}
+        // Intentar cerrar con ESC múltiples veces
+        for (let escAttempt = 0; escAttempt < 3; escAttempt++) {
+          await page.keyboard.press('Escape');
+          await page.waitForTimeout(300);
+        }
+        
+        // Verificar si hay algún modal o popup abierto y cerrarlo
+        const hasOpenModal = await page.evaluate(() => {
+          const modals = document.querySelectorAll('[class*="modal"], [class*="Modal"], [role="dialog"]');
+          return Array.from(modals).some(modal => {
+            const style = window.getComputedStyle(modal);
+            return style.display !== 'none' && style.visibility !== 'hidden' && modal.offsetParent;
+          });
+        });
+        
+        if (hasOpenModal) {
+          // Intentar hacer click fuera del modal
+          await page.mouse.click(10, 10);
+          await page.waitForTimeout(300);
+        }
+      } catch (cleanupError) {
+        // Ignorar errores de limpieza
+        console.log(`   ⚠️ Cleanup error (ignored): ${cleanupError.message}`);
+      }
+      
+      // Continuar con la siguiente tarjeta en lugar de fallar completamente
+      continue;
     }
   }
   
