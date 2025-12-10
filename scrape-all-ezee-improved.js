@@ -6,13 +6,19 @@
 async function scrapeCardsFromSection(page, sectionName, cardSelector = 'div.sc-kvxsdh.cczCye') {
   const results = [];
   
-  console.log(`🔍 Finding ${sectionName} cards...`);
-  
-  // Obtener todas las tarjetas
-  const cardHandles = await page.$$(cardSelector);
-  console.log(`📦 Found ${cardHandles.length} ${sectionName} cards`);
-  
-  for (let i = 0; i < cardHandles.length; i++) {
+  try {
+    console.log(`🔍 Finding ${sectionName} cards...`);
+    
+    // Obtener todas las tarjetas
+    const cardHandles = await page.$$(cardSelector);
+    console.log(`📦 Found ${cardHandles.length} ${sectionName} cards`);
+    
+    if (cardHandles.length === 0) {
+      console.log(`   ⚠️ No cards found for ${sectionName}`);
+      return results; // Devolver array vacío
+    }
+    
+    for (let i = 0; i < cardHandles.length; i++) {
     try {
       console.log(`\n📋 Processing ${sectionName} ${i + 1}/${cardHandles.length}...`);
       
@@ -57,50 +63,84 @@ async function scrapeCardsFromSection(page, sectionName, cardSelector = 'div.sc-
       
       // 2. Hacer click en la tarjeta para abrir el popup
       try {
-        // Hacer scroll hasta el elemento para asegurar que esté visible
+        // Re-obtener la tarjeta antes de hacer click (por si el DOM cambió)
+        const currentCards = await page.$$(cardSelector);
+        if (i >= currentCards.length || !currentCards[i]) {
+          console.log(`   ⚠️ Card ${i + 1} no longer exists, skipping...`);
+          continue;
+        }
+        const cardToClick = currentCards[i];
+        
+        // Hacer scroll hasta el elemento usando JavaScript (más confiable)
         try {
-          await page.evaluate((element) => {
-            if (element) element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          }, card);
-          await page.waitForTimeout(300);
+          await page.evaluate((selector, index) => {
+            const cards = Array.from(document.querySelectorAll(selector));
+            if (index < cards.length && cards[index]) {
+              cards[index].scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+          }, cardSelector, i);
+          await page.waitForTimeout(500);
         } catch (scrollError) {
           // Ignorar errores de scroll
+          console.log(`   ⚠️ Scroll error (ignored): ${scrollError.message}`);
         }
         
         // Intentar hacer click con múltiples estrategias
         let clickSuccess = false;
         
-        // Estrategia 1: Click normal de Puppeteer
+        // Estrategia 1: JavaScript click directo (más confiable que Puppeteer click)
         try {
-          await card.click({ delay: 100 });
+          await page.evaluate((selector, index) => {
+            const cards = Array.from(document.querySelectorAll(selector));
+            if (index < cards.length && cards[index]) {
+              const card = cards[index];
+              // Asegurar que esté visible
+              card.scrollIntoView({ behavior: 'instant', block: 'center' });
+              // Hacer click
+              card.click();
+            }
+          }, cardSelector, i);
           clickSuccess = true;
         } catch (clickError1) {
-          // Estrategia 2: JavaScript click directo usando índice
+          // Estrategia 2: Click normal de Puppeteer
           try {
-            await page.evaluate((selector, index) => {
-              const cards = Array.from(document.querySelectorAll(selector));
-              if (index < cards.length && cards[index]) {
-                cards[index].scrollIntoView({ behavior: 'smooth', block: 'center' });
-                cards[index].click();
-              }
-            }, cardSelector, i);
-            clickSuccess = true;
+            // Re-obtener el elemento
+            const cardsForClick = await page.$$(cardSelector);
+            if (i < cardsForClick.length && cardsForClick[i]) {
+              await cardsForClick[i].click({ delay: 100 });
+              clickSuccess = true;
+            } else {
+              throw new Error('Card not found for Puppeteer click');
+            }
           } catch (clickError2) {
-            // Estrategia 3: Click en el centro del elemento usando bounding box
+            // Estrategia 3: Click en el centro usando bounding box
             try {
-              const box = await card.boundingBox();
-              if (box) {
-                await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
-                clickSuccess = true;
+              const cardsForBox = await page.$$(cardSelector);
+              if (i < cardsForBox.length && cardsForBox[i]) {
+                const box = await cardsForBox[i].boundingBox();
+                if (box) {
+                  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+                  clickSuccess = true;
+                } else {
+                  throw new Error('Element has no bounding box');
+                }
               } else {
-                throw new Error('Element has no bounding box');
+                throw new Error('Card not found for bounding box');
               }
             } catch (clickError3) {
               // Si todas las estrategias fallan, continuar con la siguiente tarjeta
               console.log(`   ⚠️ All click strategies failed for card ${i + 1}, skipping...`);
+              console.log(`      Error 1: ${clickError1.message}`);
+              console.log(`      Error 2: ${clickError2.message}`);
+              console.log(`      Error 3: ${clickError3.message}`);
               continue;
             }
           }
+        }
+        
+        if (!clickSuccess) {
+          console.log(`   ⚠️ Click failed for card ${i + 1}, skipping...`);
+          continue;
         }
         
         // Esperar a que se abra el popup
@@ -495,8 +535,13 @@ async function scrapeCardsFromSection(page, sectionName, cardSelector = 'div.sc-
       // Continuar con la siguiente tarjeta en lugar de fallar completamente
       continue;
     }
+    }
+  } catch (sectionError) {
+    console.error(`❌ Critical error in scrapeCardsFromSection for ${sectionName}:`, sectionError.message);
+    // Devolver resultados parciales si hay alguno, o array vacío
   }
   
+  console.log(`✅ Completed ${sectionName} scraping: ${results.length} items extracted`);
   return results;
 }
 
@@ -535,8 +580,13 @@ async function scrapeAllEzeeImproved(page) {
     await page.waitForTimeout(3000);
     
     // Usar función helper para extraer datos
-    results.reservations = await scrapeCardsFromSection(page, 'reservation');
-    console.log(`✅ Found ${results.reservations.length} reservations`);
+    try {
+      results.reservations = await scrapeCardsFromSection(page, 'reservation');
+      console.log(`✅ Found ${results.reservations.length} reservations`);
+    } catch (error) {
+      console.error('❌ Error scraping reservations:', error.message);
+      results.reservations = []; // Continuar con array vacío
+    }
 
     // ==================== ARRIVALS ====================
     console.log('\n✈️ Scraping ARRIVALS...');
@@ -550,8 +600,13 @@ async function scrapeAllEzeeImproved(page) {
     await page.waitForTimeout(3000);
     
     // Usar función helper para extraer datos
-    results.arrivals = await scrapeCardsFromSection(page, 'arrival');
-    console.log(`✅ Found ${results.arrivals.length} arrivals`);
+    try {
+      results.arrivals = await scrapeCardsFromSection(page, 'arrival');
+      console.log(`✅ Found ${results.arrivals.length} arrivals`);
+    } catch (error) {
+      console.error('❌ Error scraping arrivals:', error.message);
+      results.arrivals = []; // Continuar con array vacío
+    }
 
     // ==================== DEPARTURES ====================
     console.log('\n✈️ Scraping DEPARTURES...');
@@ -565,8 +620,13 @@ async function scrapeAllEzeeImproved(page) {
     await page.waitForTimeout(3000);
     
     // Usar función helper para extraer datos
-    results.departures = await scrapeCardsFromSection(page, 'departure');
-    console.log(`✅ Found ${results.departures.length} departures`);
+    try {
+      results.departures = await scrapeCardsFromSection(page, 'departure');
+      console.log(`✅ Found ${results.departures.length} departures`);
+    } catch (error) {
+      console.error('❌ Error scraping departures:', error.message);
+      results.departures = []; // Continuar con array vacío
+    }
 
     // ==================== IN-HOUSE ====================
     console.log('\n🏨 Scraping IN-HOUSE...');
@@ -580,8 +640,13 @@ async function scrapeAllEzeeImproved(page) {
     await page.waitForTimeout(3000);
     
     // Usar función helper para extraer datos
-    results.inhouse = await scrapeCardsFromSection(page, 'in-house');
-    console.log(`✅ Found ${results.inhouse.length} in-house reservations`);
+    try {
+      results.inhouse = await scrapeCardsFromSection(page, 'in-house');
+      console.log(`✅ Found ${results.inhouse.length} in-house reservations`);
+    } catch (error) {
+      console.error('❌ Error scraping in-house:', error.message);
+      results.inhouse = []; // Continuar con array vacío
+    }
 
     // ==================== STAYVIEW ====================
     console.log('\n📊 Scraping STAYVIEW...');
