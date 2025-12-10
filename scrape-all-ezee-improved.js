@@ -406,41 +406,104 @@ async function scrapeCardsFromSection(page, sectionName, cardSelector = 'div.sc-
         // Esperar un momento antes de intentar cerrar
         await page.waitForTimeout(300);
         
-        // Buscar botón de cerrar con múltiples selectores
-        const closeButton = await page.$('button[aria-label="Close"], button[aria-label="close"], button:has-text("×"), [class*="close"], [class*="Close"], .ant-modal-close');
-        
-        if (closeButton) {
-          try {
-            // Verificar que el botón es visible y clickeable
-            const isVisible = await page.evaluate((btn) => {
-              if (!btn) return false;
-              const rect = btn.getBoundingClientRect();
+        // Buscar botón de cerrar usando JavaScript nativo (más confiable)
+        const closeButtonFound = await page.evaluate(() => {
+          // Buscar por múltiples selectores CSS válidos
+          const selectors = [
+            'button[aria-label="Close"]',
+            'button[aria-label="close"]',
+            '.ant-modal-close',
+            '[class*="close"]',
+            '[class*="Close"]',
+            'button[class*="close"]'
+          ];
+          
+          for (const selector of selectors) {
+            const btn = document.querySelector(selector);
+            if (btn) {
               const style = window.getComputedStyle(btn);
-              return (
-                rect.width > 0 &&
-                rect.height > 0 &&
-                style.display !== 'none' &&
-                style.visibility !== 'hidden'
-              );
-            }, closeButton);
-            
-            if (isVisible) {
-              await closeButton.click({ delay: 100 });
-            } else {
-              await page.keyboard.press('Escape');
+              const rect = btn.getBoundingClientRect();
+              if (rect.width > 0 && rect.height > 0 && 
+                  style.display !== 'none' && 
+                  style.visibility !== 'hidden') {
+                return true; // Botón encontrado y visible
+              }
             }
-          } catch (btnError) {
-            // Si falla el click del botón, usar ESC
+          }
+          
+          // Buscar por texto "×" o "X" en botones
+          const buttons = Array.from(document.querySelectorAll('button'));
+          for (const btn of buttons) {
+            const text = btn.textContent?.trim() || '';
+            if (text === '×' || text === 'X' || text === '✕') {
+              const style = window.getComputedStyle(btn);
+              const rect = btn.getBoundingClientRect();
+              if (rect.width > 0 && rect.height > 0 && 
+                  style.display !== 'none' && 
+                  style.visibility !== 'hidden') {
+                return true; // Botón encontrado por texto
+              }
+            }
+          }
+          
+          return false;
+        });
+        
+        if (closeButtonFound) {
+          // Intentar hacer click en el botón usando JavaScript
+          try {
+            await page.evaluate(() => {
+              const selectors = [
+                'button[aria-label="Close"]',
+                'button[aria-label="close"]',
+                '.ant-modal-close',
+                '[class*="close"]',
+                '[class*="Close"]',
+                'button[class*="close"]'
+              ];
+              
+              for (const selector of selectors) {
+                const btn = document.querySelector(selector);
+                if (btn) {
+                  const style = window.getComputedStyle(btn);
+                  const rect = btn.getBoundingClientRect();
+                  if (rect.width > 0 && rect.height > 0 && 
+                      style.display !== 'none' && 
+                      style.visibility !== 'hidden') {
+                    btn.click();
+                    return;
+                  }
+                }
+              }
+              
+              // Buscar por texto
+              const buttons = Array.from(document.querySelectorAll('button'));
+              for (const btn of buttons) {
+                const text = btn.textContent?.trim() || '';
+                if (text === '×' || text === 'X' || text === '✕') {
+                  const style = window.getComputedStyle(btn);
+                  const rect = btn.getBoundingClientRect();
+                  if (rect.width > 0 && rect.height > 0 && 
+                      style.display !== 'none' && 
+                      style.visibility !== 'hidden') {
+                    btn.click();
+                    return;
+                  }
+                }
+              }
+            });
+          } catch (clickError) {
+            // Si falla el click, usar ESC
             await page.keyboard.press('Escape');
           }
         } else {
-          // Si no hay botón, usar ESC
+          // Si no se encuentra botón, usar ESC directamente
           await page.keyboard.press('Escape');
         }
         
         await page.waitForTimeout(500);
         
-        // Verificar que el popup se cerró (esperar a que desaparezca)
+        // Verificar que el popup se cerró
         try {
           await page.waitForFunction(
             () => {
