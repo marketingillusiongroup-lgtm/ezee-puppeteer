@@ -302,8 +302,14 @@ app.post('/scrape-stayview', async (req, res) => {
 
 // Endpoint COMPLETO - Scrapea TODO de eZee (Recomendado para n8n)
 app.post('/scrape-all', async (req, res) => {
+  // Crear una nueva página en lugar de reutilizar el navegador compartido
+  // Esto evita problemas de estado inconsistente
   const browser = await getBrowser();
   const page = await browser.newPage();
+  
+  // Configurar timeouts más largos para operaciones lentas
+  page.setDefaultNavigationTimeout(60000);
+  page.setDefaultTimeout(60000);
   
   try {
     console.log('🚀 Starting COMPLETE eZee scraping...');
@@ -323,18 +329,96 @@ app.post('/scrape-all', async (req, res) => {
     await page.type('input#hotelcode', EZEE_CREDENTIALS.propertyCode);
     
     console.log('🔑 Logging in...');
-    await page.click('button#login');
+    // Esperar a que el botón de login esté disponible y sea clickeable
+    try {
+      await page.waitForSelector('button#login', { 
+        visible: true, 
+        timeout: 10000 
+      });
+      
+      // Verificar que el botón es clickeable
+      const isClickable = await page.evaluate(() => {
+        const btn = document.querySelector('button#login');
+        if (!btn) return false;
+        const style = window.getComputedStyle(btn);
+        const rect = btn.getBoundingClientRect();
+        return (
+          rect.width > 0 &&
+          rect.height > 0 &&
+          style.display !== 'none' &&
+          style.visibility !== 'hidden' &&
+          style.pointerEvents !== 'none' &&
+          !btn.disabled
+        );
+      });
+      
+      if (!isClickable) {
+        throw new Error('Login button is not clickable');
+      }
+      
+      // Intentar hacer click con múltiples estrategias
+      try {
+        await page.click('button#login', { delay: 100 });
+      } catch (clickError) {
+        // Si falla, intentar con JavaScript
+        await page.evaluate(() => {
+          const btn = document.querySelector('button#login');
+          if (btn) btn.click();
+        });
+      }
+    } catch (loginError) {
+      throw new Error(`Failed to click login button: ${loginError.message}`);
+    }
+    
     await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {});
     await page.waitForTimeout(3000);
     
     // Click PMS button
     console.log('🏨 Clicking PMS button...');
-    await page.evaluate(() => {
-      const buttons = Array.from(document.querySelectorAll('button'));
-      const pmsButton = buttons.find(btn => btn.textContent.trim() === 'Property Management System');
-      if (pmsButton) pmsButton.click();
-    });
-    await page.waitForTimeout(3000);
+    try {
+      // Esperar a que la página cargue completamente
+      await page.waitForTimeout(2000);
+      
+      const pmsClicked = await page.evaluate(() => {
+        const buttons = Array.from(document.querySelectorAll('button'));
+        const pmsButton = buttons.find(btn => 
+          btn.textContent && btn.textContent.trim() === 'Property Management System'
+        );
+        if (pmsButton) {
+          const style = window.getComputedStyle(pmsButton);
+          const rect = pmsButton.getBoundingClientRect();
+          if (rect.width > 0 && rect.height > 0 && 
+              style.display !== 'none' && 
+              style.visibility !== 'hidden' &&
+              !pmsButton.disabled) {
+            pmsButton.click();
+            return true;
+          }
+        }
+        return false;
+      });
+      
+      if (pmsClicked) {
+        await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {});
+        await page.waitForTimeout(3000);
+      } else {
+        console.log('⚠️ PMS button not found or not clickable, trying direct navigation...');
+        // Intentar navegar directamente a la página de reservations
+        await page.goto('https://live.ipms247.com/frontoffice/reservations', {
+          waitUntil: 'networkidle2',
+          timeout: 60000
+        });
+        await page.waitForTimeout(3000);
+      }
+    } catch (pmsError) {
+      console.log('⚠️ Error clicking PMS button, trying direct navigation:', pmsError.message);
+      // Si falla, navegar directamente
+      await page.goto('https://live.ipms247.com/frontoffice/reservations', {
+        waitUntil: 'networkidle2',
+        timeout: 60000
+      });
+      await page.waitForTimeout(3000);
+    }
     
     // Usar la función MEJORADA de scraping (extrae datos estructurados)
     console.log('📊 Extracting ALL data from eZee (IMPROVED)...');
