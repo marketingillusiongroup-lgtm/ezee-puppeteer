@@ -94,24 +94,62 @@ async function scrapeEzee(queryType = 'general') {
     
     // PASO CRÍTICO: Hacer clic en "Property Management System"
     console.log('🏨 Looking for Property Management System button...');
+    let pmsClicked = false;
+    
     try {
       await page.waitForTimeout(3000); // Esperar a que cargue la página
       
-      // Buscar y hacer click usando evaluate (más confiable)
-      const pmsClicked = await page.evaluate(() => {
-        const buttons = Array.from(document.querySelectorAll('button'));
-        const pmsButton = buttons.find(btn => 
-          btn.textContent.trim() === 'Property Management System'
-        );
-        if (pmsButton) {
-          pmsButton.click();
-          return true;
+      // Estrategia 1: Buscar por selector con clases button.btn.btn-primary.system
+      try {
+        await page.waitForSelector('button.btn.btn-primary.system', { 
+          visible: true, 
+          timeout: 15000 
+        });
+        
+        const isClickable = await page.evaluate(() => {
+          const btn = document.querySelector('button.btn.btn-primary.system');
+          if (!btn) return false;
+          const style = window.getComputedStyle(btn);
+          const rect = btn.getBoundingClientRect();
+          return (
+            rect.width > 0 &&
+            rect.height > 0 &&
+            style.display !== 'none' &&
+            style.visibility !== 'hidden' &&
+            !btn.disabled
+          );
+        });
+        
+        if (isClickable) {
+          await page.click('button.btn.btn-primary.system', { delay: 100 });
+          pmsClicked = true;
+          console.log('✅ PMS button clicked (by classes)');
         }
-        return false;
-      });
+      } catch (e) {
+        console.log('⚠️ PMS button by classes not found, trying by text...');
+      }
+      
+      // Estrategia 2: Buscar por texto
+      if (!pmsClicked) {
+        const clicked = await page.evaluate(() => {
+          const buttons = Array.from(document.querySelectorAll('button'));
+          const pmsButton = buttons.find(btn => 
+            btn.textContent && btn.textContent.trim() === 'Property Management System'
+          );
+          if (pmsButton) {
+            pmsButton.click();
+            return true;
+          }
+          return false;
+        });
+        
+        if (clicked) {
+          pmsClicked = true;
+          console.log('✅ PMS button clicked (by text)');
+        }
+      }
       
       if (pmsClicked) {
-        console.log('✅ PMS button clicked');
         await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {});
         await page.waitForTimeout(3000);
       } else {
@@ -259,17 +297,61 @@ app.post('/scrape-stayview', async (req, res) => {
     await page.type('input#hotelcode', EZEE_CREDENTIALS.propertyCode);
     
     console.log('🔑 Logging in...');
-    await page.click('button#login');
+    // Usar las mismas estrategias mejoradas de login
+    await page.waitForTimeout(1000);
+    let loginClicked = false;
+    
+    // Estrategia 1: Selector completo
+    try {
+      await page.waitForSelector('button#login.btn.btn-primary', { visible: true, timeout: 20000 });
+      await page.click('button#login.btn.btn-primary', { delay: 100 });
+      loginClicked = true;
+    } catch (e) {
+      try {
+        await page.waitForSelector('button#login', { visible: true, timeout: 15000 });
+        await page.click('button#login', { delay: 100 });
+        loginClicked = true;
+      } catch (e2) {
+        // Intentar por texto
+        loginClicked = await page.evaluate(() => {
+          const buttons = Array.from(document.querySelectorAll('button'));
+          const btn = buttons.find(b => b.textContent.trim() === 'SIGN IN' || b.id === 'login');
+          if (btn) { btn.click(); return true; }
+          return false;
+        });
+      }
+    }
+    
+    if (!loginClicked) {
+      throw new Error('Failed to click login button');
+    }
+    
     await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {});
     await page.waitForTimeout(3000);
     
-    // Click PMS button
+    // Click PMS button con estrategias mejoradas
     console.log('🏨 Clicking PMS button...');
-    await page.evaluate(() => {
-      const buttons = Array.from(document.querySelectorAll('button'));
-      const pmsButton = buttons.find(btn => btn.textContent.trim() === 'Property Management System');
-      if (pmsButton) pmsButton.click();
-    });
+    let pmsClicked = false;
+    
+    // Estrategia 1: Por clases
+    try {
+      await page.waitForSelector('button.btn.btn-primary.system', { visible: true, timeout: 15000 });
+      await page.click('button.btn.btn-primary.system', { delay: 100 });
+      pmsClicked = true;
+      console.log('  ✅ PMS clicked (by classes)');
+    } catch (e) {
+      // Estrategia 2: Por texto
+      pmsClicked = await page.evaluate(() => {
+        const buttons = Array.from(document.querySelectorAll('button'));
+        const pmsButton = buttons.find(btn => 
+          btn.textContent && btn.textContent.trim() === 'Property Management System'
+        );
+        if (pmsButton) { pmsButton.click(); return true; }
+        return false;
+      });
+      if (pmsClicked) console.log('  ✅ PMS clicked (by text)');
+    }
+    
     await page.waitForTimeout(3000);
     
     // Navegar a StayView
@@ -329,16 +411,23 @@ app.post('/scrape-all', async (req, res) => {
     await page.type('input#hotelcode', EZEE_CREDENTIALS.propertyCode);
     
     console.log('🔑 Logging in...');
-    // Esperar a que el botón de login esté disponible y sea clickeable
+    // Esperar un momento después de llenar el formulario para que el botón se habilite
+    await page.waitForTimeout(2000);
+    
+    // Intentar múltiples estrategias para encontrar y hacer click en el botón de login
+    let loginClicked = false;
+    
+    // Estrategia 1: Usar el selector completo button#login.btn.btn-primary (más específico)
     try {
-      await page.waitForSelector('button#login', { 
+      console.log('  🔍 Strategy 1: Looking for button#login.btn.btn-primary...');
+      await page.waitForSelector('button#login.btn.btn-primary', { 
         visible: true, 
-        timeout: 10000 
+        timeout: 20000 
       });
       
       // Verificar que el botón es clickeable
       const isClickable = await page.evaluate(() => {
-        const btn = document.querySelector('button#login');
+        const btn = document.querySelector('button#login.btn.btn-primary');
         if (!btn) return false;
         const style = window.getComputedStyle(btn);
         const rect = btn.getBoundingClientRect();
@@ -352,22 +441,127 @@ app.post('/scrape-all', async (req, res) => {
         );
       });
       
-      if (!isClickable) {
-        throw new Error('Login button is not clickable');
+      if (isClickable) {
+        await page.click('button#login.btn.btn-primary', { delay: 100 });
+        loginClicked = true;
+        console.log('  ✅ Login clicked (Strategy 1: button#login.btn.btn-primary)');
       }
-      
-      // Intentar hacer click con múltiples estrategias
+    } catch (e) {
+      console.log('  ⚠️ Strategy 1 failed:', e.message);
+    }
+    
+    // Estrategia 1b: Intentar con selector simple button#login
+    if (!loginClicked) {
       try {
-        await page.click('button#login', { delay: 100 });
-      } catch (clickError) {
-        // Si falla, intentar con JavaScript
-        await page.evaluate(() => {
-          const btn = document.querySelector('button#login');
-          if (btn) btn.click();
+        console.log('  🔍 Strategy 1b: Looking for button#login (simple selector)...');
+        await page.waitForSelector('button#login', { 
+          visible: true, 
+          timeout: 15000 
         });
+        
+        const isClickable = await page.evaluate(() => {
+          const btn = document.querySelector('button#login');
+          if (!btn) return false;
+          const style = window.getComputedStyle(btn);
+          const rect = btn.getBoundingClientRect();
+          return (
+            rect.width > 0 &&
+            rect.height > 0 &&
+            style.display !== 'none' &&
+            style.visibility !== 'hidden' &&
+            style.pointerEvents !== 'none' &&
+            !btn.disabled
+          );
+        });
+        
+        if (isClickable) {
+          await page.click('button#login', { delay: 100 });
+          loginClicked = true;
+          console.log('  ✅ Login clicked (Strategy 1b: button#login)');
+        }
+      } catch (e) {
+        console.log('  ⚠️ Strategy 1b failed:', e.message);
       }
-    } catch (loginError) {
-      throw new Error(`Failed to click login button: ${loginError.message}`);
+    }
+    
+    // Estrategia 2: Buscar botón por texto "SIGN IN" (exacto, en mayúsculas)
+    if (!loginClicked) {
+      try {
+        console.log('  🔍 Strategy 2: Looking for button by text "SIGN IN"...');
+        loginClicked = await page.evaluate(() => {
+          const buttons = Array.from(document.querySelectorAll('button'));
+          const loginButton = buttons.find(btn => {
+            const text = btn.textContent.trim();
+            // Buscar exactamente "SIGN IN" o variaciones
+            return text === 'SIGN IN' || 
+                   text.toLowerCase() === 'sign in' || 
+                   text.toLowerCase().includes('sign in') ||
+                   btn.id === 'login';
+          });
+          
+          if (loginButton) {
+            const style = window.getComputedStyle(loginButton);
+            const rect = loginButton.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0 && 
+                style.display !== 'none' && 
+                style.visibility !== 'hidden' &&
+                style.opacity !== '0' &&
+                !loginButton.disabled) {
+              loginButton.click();
+              return true;
+            }
+          }
+          return false;
+        });
+        
+        if (loginClicked) {
+          console.log('  ✅ Login clicked (Strategy 2: by text "SIGN IN")');
+        }
+      } catch (e) {
+        console.log('  ⚠️ Strategy 2 failed:', e.message);
+      }
+    }
+    
+    // Estrategia 3: Buscar cualquier botón en el formulario y hacer click
+    if (!loginClicked) {
+      try {
+        console.log('  🔍 Strategy 3: Looking for any submit button...');
+        loginClicked = await page.evaluate(() => {
+          // Buscar botón submit en el formulario
+          const form = document.querySelector('form');
+          if (form) {
+            const submitBtn = form.querySelector('button[type="submit"], button:not([type])');
+            if (submitBtn) {
+              submitBtn.click();
+              return true;
+            }
+          }
+          return false;
+        });
+        
+        if (loginClicked) {
+          console.log('  ✅ Login clicked (Strategy 3)');
+        }
+      } catch (e) {
+        console.log('  ⚠️ Strategy 3 failed:', e.message);
+      }
+    }
+    
+    // Estrategia 4: Presionar Enter en el último campo
+    if (!loginClicked) {
+      try {
+        console.log('  🔍 Strategy 4: Pressing Enter on hotelcode field...');
+        await page.focus('input#hotelcode');
+        await page.keyboard.press('Enter');
+        loginClicked = true;
+        console.log('  ✅ Enter pressed (Strategy 4)');
+      } catch (e) {
+        console.log('  ⚠️ Strategy 4 failed:', e.message);
+      }
+    }
+    
+    if (!loginClicked) {
+      throw new Error('Failed to click login button with all strategies');
     }
     
     await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {});
@@ -375,44 +569,81 @@ app.post('/scrape-all', async (req, res) => {
     
     // Click PMS button
     console.log('🏨 Clicking PMS button...');
+    let pmsClicked = false;
+    
+    // Estrategia 1: Buscar por selector con clases button.btn.btn-primary.system
     try {
-      // Esperar a que la página cargue completamente
-      await page.waitForTimeout(2000);
-      
-      const pmsClicked = await page.evaluate(() => {
-        const buttons = Array.from(document.querySelectorAll('button'));
-        const pmsButton = buttons.find(btn => 
-          btn.textContent && btn.textContent.trim() === 'Property Management System'
-        );
-        if (pmsButton) {
-          const style = window.getComputedStyle(pmsButton);
-          const rect = pmsButton.getBoundingClientRect();
-          if (rect.width > 0 && rect.height > 0 && 
-              style.display !== 'none' && 
-              style.visibility !== 'hidden' &&
-              !pmsButton.disabled) {
-            pmsButton.click();
-            return true;
-          }
-        }
-        return false;
+      console.log('  🔍 PMS Strategy 1: Looking for button.btn.btn-primary.system...');
+      await page.waitForSelector('button.btn.btn-primary.system', { 
+        visible: true, 
+        timeout: 15000 
       });
       
-      if (pmsClicked) {
-        await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {});
-        await page.waitForTimeout(3000);
-      } else {
-        console.log('⚠️ PMS button not found or not clickable, trying direct navigation...');
-        // Intentar navegar directamente a la página de reservations
-        await page.goto('https://live.ipms247.com/frontoffice/reservations', {
-          waitUntil: 'networkidle2',
-          timeout: 60000
-        });
-        await page.waitForTimeout(3000);
+      const isClickable = await page.evaluate(() => {
+        const btn = document.querySelector('button.btn.btn-primary.system');
+        if (!btn) return false;
+        const style = window.getComputedStyle(btn);
+        const rect = btn.getBoundingClientRect();
+        return (
+          rect.width > 0 &&
+          rect.height > 0 &&
+          style.display !== 'none' &&
+          style.visibility !== 'hidden' &&
+          style.opacity !== '0' &&
+          !btn.disabled
+        );
+      });
+      
+      if (isClickable) {
+        await page.click('button.btn.btn-primary.system', { delay: 100 });
+        pmsClicked = true;
+        console.log('  ✅ PMS button clicked (Strategy 1: by classes)');
       }
-    } catch (pmsError) {
-      console.log('⚠️ Error clicking PMS button, trying direct navigation:', pmsError.message);
-      // Si falla, navegar directamente
+    } catch (e) {
+      console.log('  ⚠️ PMS Strategy 1 failed:', e.message);
+    }
+    
+    // Estrategia 2: Buscar por texto "Property Management System"
+    if (!pmsClicked) {
+      try {
+        console.log('  🔍 PMS Strategy 2: Looking for button by text...');
+        pmsClicked = await page.evaluate(() => {
+          const buttons = Array.from(document.querySelectorAll('button'));
+          const pmsButton = buttons.find(btn => {
+            const text = btn.textContent && btn.textContent.trim();
+            return text === 'Property Management System';
+          });
+          
+          if (pmsButton) {
+            const style = window.getComputedStyle(pmsButton);
+            const rect = pmsButton.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0 && 
+                style.display !== 'none' && 
+                style.visibility !== 'hidden' &&
+                style.opacity !== '0' &&
+                !pmsButton.disabled) {
+              pmsButton.click();
+              return true;
+            }
+          }
+          return false;
+        });
+        
+        if (pmsClicked) {
+          console.log('  ✅ PMS button clicked (Strategy 2: by text)');
+        }
+      } catch (e) {
+        console.log('  ⚠️ PMS Strategy 2 failed:', e.message);
+      }
+    }
+    
+    // Si encontró el botón, esperar navegación
+    if (pmsClicked) {
+      await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {});
+      await page.waitForTimeout(3000);
+    } else {
+      console.log('⚠️ PMS button not found or not clickable, trying direct navigation...');
+      // Intentar navegar directamente a la página de reservations
       await page.goto('https://live.ipms247.com/frontoffice/reservations', {
         waitUntil: 'networkidle2',
         timeout: 60000
