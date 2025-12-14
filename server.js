@@ -33,9 +33,24 @@ const EZEE_URLS = {
 
 // Navegador compartido (más rápido)
 let browser = null;
+let browserLastUsed = null;
 
 // Inicializar navegador
 async function getBrowser() {
+  const now = Date.now();
+  
+  // Si el navegador tiene más de 1 hora sin usarse, cerrarlo y crear uno nuevo
+  // Esto previene problemas de memoria y páginas colgadas
+  if (browser && browserLastUsed && (now - browserLastUsed) > 3600000) {
+    console.log('🔄 Browser idle for >1 hour, closing and creating new one...');
+    try {
+      await browser.close();
+    } catch (e) {
+      console.log('⚠️ Error closing old browser:', e.message);
+    }
+    browser = null;
+  }
+  
   if (!browser) {
     browser = await puppeteer.launch({
       headless: 'new',
@@ -44,10 +59,14 @@ async function getBrowser() {
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--disable-accelerated-2d-canvas',
-        '--disable-gpu'
+        '--disable-gpu',
+        '--disable-software-rasterizer'
       ]
     });
+    console.log('✅ New browser instance created');
   }
+  
+  browserLastUsed = now;
   return browser;
 }
 
