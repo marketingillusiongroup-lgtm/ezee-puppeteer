@@ -668,9 +668,16 @@ app.post('/scrape-all', async (req, res) => {
       // Intentar navegar directamente a la página de reservations
       await page.goto('https://live.ipms247.com/frontoffice/reservations', {
         waitUntil: 'networkidle2',
-        timeout: 60000
+        timeout: 30000
       });
       await page.waitForTimeout(3000);
+      
+      // Verificar que estamos autenticados (no redirigidos al login)
+      const currentUrl = await page.url();
+      if (currentUrl.includes('/login')) {
+        throw new Error('Not authenticated - redirected to login page. PMS button click may have failed.');
+      }
+      console.log('✅ Direct navigation successful, URL:', currentUrl);
     }
     
     // Usar la función MEJORADA de scraping (extrae datos estructurados)
@@ -716,9 +723,13 @@ app.post('/scrape-all', async (req, res) => {
     clearTimeout(requestTimeout);
     
     try {
-      await page.close();
+      // Verificar que la página aún existe antes de cerrarla
+      if (!page.isClosed()) {
+        await page.close();
+      }
     } catch (closeError) {
-      // Ignorar errores al cerrar la página
+      // Ignorar errores al cerrar la página (ya está cerrada o desconectada)
+      console.log('⚠️ Page already closed or disconnected:', closeError.message);
     }
     
     // NUNCA devolver error 500, siempre devolver success: true con datos vacíos
