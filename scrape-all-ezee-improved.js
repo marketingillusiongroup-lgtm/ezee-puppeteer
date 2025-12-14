@@ -7,14 +7,51 @@ async function scrapeCardsFromSection(page, sectionName, cardSelector = 'div.sc-
   const results = [];
   
   try {
+    // Verificar que la página aún existe
+    if (page.isClosed()) {
+      console.log(`   ⚠️ Page is closed, cannot scrape ${sectionName}`);
+      return results;
+    }
+    
+    // Verificar autenticación antes de buscar tarjetas
+    const currentUrl = await page.url();
+    if (currentUrl.includes('/login')) {
+      console.log(`   ❌ ERROR: Not authenticated - redirected to login! URL: ${currentUrl}`);
+      return results;
+    }
+    
     console.log(`🔍 Finding ${sectionName} cards...`);
+    console.log(`   📍 Current URL: ${currentUrl}`);
+    
+    // Esperar un poco más para que las tarjetas carguen
+    await page.waitForTimeout(2000);
     
     // Obtener todas las tarjetas
-    const cardHandles = await page.$$(cardSelector);
+    let cardHandles = await page.$$(cardSelector);
+    
+    // Si no encuentra con el selector principal, intentar alternativas
+    if (cardHandles.length === 0) {
+      console.log(`   🔍 Trying alternative selectors for ${sectionName}...`);
+      const alternativeSelectors = [
+        '.MuiCard-root',
+        '.MuiPaper-root',
+        '[class*="card"]',
+        'div[class*="Card"]'
+      ];
+      
+      for (const altSelector of alternativeSelectors) {
+        cardHandles = await page.$$(altSelector);
+        if (cardHandles.length > 0) {
+          console.log(`   ✅ Found ${cardHandles.length} cards with selector: ${altSelector}`);
+          break;
+        }
+      }
+    }
+    
     console.log(`📦 Found ${cardHandles.length} ${sectionName} cards`);
     
     if (cardHandles.length === 0) {
-      console.log(`   ⚠️ No cards found for ${sectionName}`);
+      console.log(`   ⚠️ No cards found for ${sectionName} - page may not be loaded or authenticated`);
       return results; // Devolver array vacío
     }
     
@@ -628,15 +665,36 @@ async function scrapeAllEzeeImproved(page) {
 
     // ==================== RESERVATIONS ====================
     console.log('\n📋 Scraping RESERVATIONS...');
-    await page.goto('https://live.ipms247.com/frontoffice/reservations', {
-      waitUntil: 'networkidle2',
-      timeout: 60000
-    });
+    
+    // Verificar que la página aún existe
+    if (page.isClosed()) {
+      throw new Error('Page was closed before scraping reservations');
+    }
+    
+    const currentUrlBeforeNav = await page.url();
+    console.log(`📍 Current URL before navigation: ${currentUrlBeforeNav}`);
+    
+    // Solo navegar si no estamos ya en la página de reservations
+    if (!currentUrlBeforeNav.includes('/frontoffice/reservations')) {
+      await page.goto('https://live.ipms247.com/frontoffice/reservations', {
+        waitUntil: 'networkidle2',
+        timeout: 30000  // Reducido de 60000
+      });
+      
+      // Verificar que no fuimos redirigidos al login
+      const currentUrl = await page.url();
+      if (currentUrl.includes('/login')) {
+        throw new Error('Not authenticated - redirected to login page');
+      }
+      console.log(`✅ Navigated to reservations: ${currentUrl}`);
+    }
+    
+    await page.waitForTimeout(2000);
     
     // Click en tab Reservations
     await page.evaluate(() => {
       const tabs = Array.from(document.querySelectorAll('div.ant-tabs-tab, button[role="tab"]'));
-      const reservationsTab = tabs.find(tab => tab.textContent.includes('Reservations'));
+      const reservationsTab = tabs.find(tab => tab.textContent && tab.textContent.includes('Reservations'));
       if (reservationsTab) reservationsTab.click();
     });
     
@@ -713,12 +771,34 @@ async function scrapeAllEzeeImproved(page) {
 
     // ==================== STAYVIEW ====================
     console.log('\n📊 Scraping STAYVIEW...');
-    await page.goto('https://live.ipms247.com/frontoffice/stayview', {
-      waitUntil: 'networkidle2',
-      timeout: 60000
-    });
-    
-    await page.waitForTimeout(3000);
+    try {
+      // Verificar que la página aún existe antes de navegar
+      if (page.isClosed()) {
+        throw new Error('Page was closed before navigating to stayview');
+      }
+      
+      await page.goto('https://live.ipms247.com/frontoffice/stayview', {
+        waitUntil: 'networkidle2',
+        timeout: 30000  // Reducido de 60000
+      });
+      
+      // Verificar que no fuimos redirigidos al login
+      const currentUrl = page.url();
+      if (currentUrl.includes('/login')) {
+        throw new Error('Not authenticated - redirected to login page when accessing stayview');
+      }
+      
+      await page.waitForTimeout(3000);
+    } catch (navError) {
+      console.error('❌ Error navigating to stayview:', navError.message);
+      // Continuar con datos vacíos en lugar de lanzar error
+      results.stayview = {
+        occupancy: [],
+        availability: [],
+        stats: { error: navError.message }
+      };
+      return results; // Retornar resultados parciales
+    }
     
     const stayviewData = await page.evaluate(() => {
       const data = {
