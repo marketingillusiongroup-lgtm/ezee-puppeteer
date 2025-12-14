@@ -65,11 +65,11 @@ async function scrapeEzee(queryType = 'general') {
     
     // Ir a login
     console.log('📄 Loading login page...');
-    await page.goto(EZEE_URLS.login, { waitUntil: 'networkidle2', timeout: 60000 });
+    await page.goto(EZEE_URLS.login, { waitUntil: 'networkidle2', timeout: 30000 });
     
     // Esperar formulario - usar selectores exactos que funcionaron
     console.log('⏳ Waiting for login form...');
-    await page.waitForSelector('input#username', { timeout: 15000 });
+    await page.waitForSelector('input#username', { timeout: 10000 });
     
     // Llenar formulario con selectores exactos
     console.log('✍️ Filling login form...');
@@ -89,8 +89,8 @@ async function scrapeEzee(queryType = 'general') {
     
     // Esperar navegación después del login
     console.log('⏳ Waiting for login to complete...');
-    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {});
-    await page.waitForTimeout(3000);
+    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 20000 }).catch(() => {});
+    await page.waitForTimeout(2000);
     
     // PASO CRÍTICO: Hacer clic en "Property Management System"
     console.log('🏨 Looking for Property Management System button...');
@@ -279,6 +279,10 @@ app.post('/scrape-stayview', async (req, res) => {
   const browser = await getBrowser();
   const page = await browser.newPage();
   
+  // Configurar timeouts más cortos
+  page.setDefaultNavigationTimeout(30000);
+  page.setDefaultTimeout(30000);
+  
   try {
     console.log('🔐 Starting StayView scraping...');
     
@@ -288,8 +292,8 @@ app.post('/scrape-stayview', async (req, res) => {
     
     // Login
     console.log('📄 Loading login page...');
-    await page.goto(EZEE_URLS.login, { waitUntil: 'networkidle2', timeout: 60000 });
-    await page.waitForSelector('input#username', { timeout: 15000 });
+    await page.goto(EZEE_URLS.login, { waitUntil: 'networkidle2', timeout: 30000 });
+    await page.waitForSelector('input#username', { timeout: 10000 });
     
     console.log('✍️ Filling login form...');
     await page.type('input#username', EZEE_CREDENTIALS.username);
@@ -326,8 +330,8 @@ app.post('/scrape-stayview', async (req, res) => {
       throw new Error('Failed to click login button');
     }
     
-    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {});
-    await page.waitForTimeout(3000);
+    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 20000 }).catch(() => {});
+    await page.waitForTimeout(2000);
     
     // Click PMS button con estrategias mejoradas
     console.log('🏨 Clicking PMS button...');
@@ -356,8 +360,8 @@ app.post('/scrape-stayview', async (req, res) => {
     
     // Navegar a StayView
     console.log('📅 Navigating to StayView...');
-    await page.goto(EZEE_URLS.availability, { waitUntil: 'networkidle2', timeout: 60000 });
-    await page.waitForTimeout(5000); // Dar tiempo para que cargue el calendario
+    await page.goto(EZEE_URLS.availability, { waitUntil: 'networkidle2', timeout: 30000 });
+    await page.waitForTimeout(3000); // Dar tiempo para que cargue el calendario
     
     // Usar la función optimizada de scraping
     console.log('📊 Extracting StayView data...');
@@ -389,9 +393,27 @@ app.post('/scrape-all', async (req, res) => {
   const browser = await getBrowser();
   const page = await browser.newPage();
   
-  // Configurar timeouts más largos para operaciones lentas
-  page.setDefaultNavigationTimeout(60000);
-  page.setDefaultTimeout(60000);
+  // Configurar timeouts más cortos para evitar que se cuelgue
+  page.setDefaultNavigationTimeout(30000);
+  page.setDefaultTimeout(30000);
+  
+  // Timeout total de la petición HTTP (2.5 minutos para dar margen antes del timeout de n8n de 3 minutos)
+  const requestTimeout = setTimeout(() => {
+    console.error('⏰ Request timeout - closing page and returning error');
+    page.close().catch(() => {});
+    if (!res.headersSent) {
+      res.json({
+        success: true,
+        reservations: [],
+        arrivals: [],
+        departures: [],
+        inhouse: [],
+        stayview: { occupancy: [], availability: [], stats: {} },
+        timestamp: new Date().toISOString(),
+        warning: 'Request timeout: scraping took too long (>2.5 minutes)'
+      });
+    }
+  }, 150000); // 2.5 minutos
   
   try {
     console.log('🚀 Starting COMPLETE eZee scraping...');
@@ -412,7 +434,7 @@ app.post('/scrape-all', async (req, res) => {
     
     console.log('🔑 Logging in...');
     // Esperar un momento después de llenar el formulario para que el botón se habilite
-    await page.waitForTimeout(2000);
+    await page.waitForTimeout(1000);
     
     // Intentar múltiples estrategias para encontrar y hacer click en el botón de login
     let loginClicked = false;
@@ -422,7 +444,7 @@ app.post('/scrape-all', async (req, res) => {
       console.log('  🔍 Strategy 1: Looking for button#login.btn.btn-primary...');
       await page.waitForSelector('button#login.btn.btn-primary', { 
         visible: true, 
-        timeout: 20000 
+        timeout: 10000 
       });
       
       // Verificar que el botón es clickeable
@@ -456,7 +478,7 @@ app.post('/scrape-all', async (req, res) => {
         console.log('  🔍 Strategy 1b: Looking for button#login (simple selector)...');
         await page.waitForSelector('button#login', { 
           visible: true, 
-          timeout: 15000 
+          timeout: 8000 
         });
         
         const isClickable = await page.evaluate(() => {
@@ -564,8 +586,8 @@ app.post('/scrape-all', async (req, res) => {
       throw new Error('Failed to click login button with all strategies');
     }
     
-    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {});
-    await page.waitForTimeout(3000);
+    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 20000 }).catch(() => {});
+    await page.waitForTimeout(2000);
     
     // Click PMS button
     console.log('🏨 Clicking PMS button...');
@@ -576,7 +598,7 @@ app.post('/scrape-all', async (req, res) => {
       console.log('  🔍 PMS Strategy 1: Looking for button.btn.btn-primary.system...');
       await page.waitForSelector('button.btn.btn-primary.system', { 
         visible: true, 
-        timeout: 15000 
+        timeout: 10000 
       });
       
       const isClickable = await page.evaluate(() => {
@@ -677,6 +699,9 @@ app.post('/scrape-all', async (req, res) => {
     
     await page.close();
     
+    // Limpiar timeout
+    clearTimeout(requestTimeout);
+    
     // Asegurar que siempre devolvemos success: true
     res.json({
       ...allData,
@@ -686,26 +711,33 @@ app.post('/scrape-all', async (req, res) => {
     
   } catch (error) {
     console.error('Complete scraping error:', error);
+    
+    // Limpiar timeout
+    clearTimeout(requestTimeout);
+    
     try {
       await page.close();
     } catch (closeError) {
       // Ignorar errores al cerrar la página
     }
+    
     // NUNCA devolver error 500, siempre devolver success: true con datos vacíos
-    res.json({
-      success: true,
-      reservations: [],
-      arrivals: [],
-      departures: [],
-      inhouse: [],
-      stayview: {
-        occupancy: [],
-        availability: [],
-        stats: {}
-      },
-      timestamp: new Date().toISOString(),
-      warning: `Scraping failed: ${error.message}`
-    });
+    if (!res.headersSent) {
+      res.json({
+        success: true,
+        reservations: [],
+        arrivals: [],
+        departures: [],
+        inhouse: [],
+        stayview: {
+          occupancy: [],
+          availability: [],
+          stats: {}
+        },
+        timestamp: new Date().toISOString(),
+        warning: `Scraping failed: ${error.message}`
+      });
+    }
   }
 });
 
