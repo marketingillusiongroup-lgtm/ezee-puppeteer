@@ -99,15 +99,15 @@ async function scrapeEzee(queryType = 'general') {
     try {
       await page.waitForTimeout(3000); // Esperar a que cargue la página
       
-      // Estrategia 1: Buscar por selector con clases button.btn.btn-primary.system
+      // Estrategia 1: Buscar por selector completo button.btn.btn-primary.system.btneaf
       try {
-        await page.waitForSelector('button.btn.btn-primary.system', { 
+        await page.waitForSelector('button.btn.btn-primary.system.btneaf', { 
           visible: true, 
           timeout: 15000 
         });
         
         const isClickable = await page.evaluate(() => {
-          const btn = document.querySelector('button.btn.btn-primary.system');
+          const btn = document.querySelector('button.btn.btn-primary.system.btneaf');
           if (!btn) return false;
           const style = window.getComputedStyle(btn);
           const rect = btn.getBoundingClientRect();
@@ -121,7 +121,7 @@ async function scrapeEzee(queryType = 'general') {
         });
         
         if (isClickable) {
-          await page.click('button.btn.btn-primary.system', { delay: 100 });
+          await page.click('button.btn.btn-primary.system.btneaf', { delay: 100 });
           pmsClicked = true;
           console.log('✅ PMS button clicked (by classes)');
         }
@@ -337,10 +337,10 @@ app.post('/scrape-stayview', async (req, res) => {
     console.log('🏨 Clicking PMS button...');
     let pmsClicked = false;
     
-    // Estrategia 1: Por clases
+    // Estrategia 1: Por clases completas button.btn.btn-primary.system.btneaf
     try {
-      await page.waitForSelector('button.btn.btn-primary.system', { visible: true, timeout: 15000 });
-      await page.click('button.btn.btn-primary.system', { delay: 100 });
+      await page.waitForSelector('button.btn.btn-primary.system.btneaf', { visible: true, timeout: 15000 });
+      await page.click('button.btn.btn-primary.system.btneaf', { delay: 100 });
       pmsClicked = true;
       console.log('  ✅ PMS clicked (by classes)');
     } catch (e) {
@@ -593,16 +593,16 @@ app.post('/scrape-all', async (req, res) => {
     console.log('🏨 Clicking PMS button...');
     let pmsClicked = false;
     
-    // Estrategia 1: Buscar por selector con clases button.btn.btn-primary.system
+    // Estrategia 1: Buscar por selector completo button.btn.btn-primary.system.btneaf
     try {
-      console.log('  🔍 PMS Strategy 1: Looking for button.btn.btn-primary.system...');
-      await page.waitForSelector('button.btn.btn-primary.system', { 
+      console.log('  🔍 PMS Strategy 1: Looking for button.btn.btn-primary.system.btneaf...');
+      await page.waitForSelector('button.btn.btn-primary.system.btneaf', { 
         visible: true, 
         timeout: 10000 
       });
       
       const isClickable = await page.evaluate(() => {
-        const btn = document.querySelector('button.btn.btn-primary.system');
+        const btn = document.querySelector('button.btn.btn-primary.system.btneaf');
         if (!btn) return false;
         const style = window.getComputedStyle(btn);
         const rect = btn.getBoundingClientRect();
@@ -617,9 +617,9 @@ app.post('/scrape-all', async (req, res) => {
       });
       
       if (isClickable) {
-        await page.click('button.btn.btn-primary.system', { delay: 100 });
+        await page.click('button.btn.btn-primary.system.btneaf', { delay: 100 });
         pmsClicked = true;
-        console.log('  ✅ PMS button clicked (Strategy 1: by classes)');
+        console.log('  ✅ PMS button clicked (Strategy 1: by classes - button.btn.btn-primary.system.btneaf)');
       }
     } catch (e) {
       console.log('  ⚠️ PMS Strategy 1 failed:', e.message);
