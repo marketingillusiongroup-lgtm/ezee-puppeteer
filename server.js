@@ -605,8 +605,9 @@ app.post('/scrape-all', async (req, res) => {
       throw new Error('Failed to click login button with all strategies');
     }
     
-    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 20000 }).catch(() => {});
-    await page.waitForTimeout(2000);
+    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {});
+    // Esperar más tiempo para que la página cargue completamente después del login
+    await page.waitForTimeout(5000);
     
     // Click PMS button
     console.log('🏨 Clicking PMS button...');
@@ -615,9 +616,10 @@ app.post('/scrape-all', async (req, res) => {
     // Estrategia 1: Buscar por selector completo button.btn.btn-primary.system.btneaf
     try {
       console.log('  🔍 PMS Strategy 1: Looking for button.btn.btn-primary.system.btneaf...');
+      // Esperar más tiempo para que aparezca el botón (especialmente importante en producción)
       await page.waitForSelector('button.btn.btn-primary.system.btneaf', { 
         visible: true, 
-        timeout: 10000 
+        timeout: 20000  // Aumentado de 10000 a 20000 (20 segundos)
       });
       
       const isClickable = await page.evaluate(() => {
@@ -644,10 +646,13 @@ app.post('/scrape-all', async (req, res) => {
       console.log('  ⚠️ PMS Strategy 1 failed:', e.message);
     }
     
-    // Estrategia 2: Buscar por texto "Property Management System"
+    // Estrategia 2: Buscar por texto "Property Management System" con espera
     if (!pmsClicked) {
       try {
         console.log('  🔍 PMS Strategy 2: Looking for button by text...');
+        // Esperar un poco más antes de buscar por texto
+        await page.waitForTimeout(2000);
+        
         pmsClicked = await page.evaluate(() => {
           const buttons = Array.from(document.querySelectorAll('button'));
           const pmsButton = buttons.find(btn => {
@@ -672,9 +677,47 @@ app.post('/scrape-all', async (req, res) => {
         
         if (pmsClicked) {
           console.log('  ✅ PMS button clicked (Strategy 2: by text)');
+        } else {
+          console.log('  ⚠️ PMS button not found by text, trying strategy 3...');
         }
       } catch (e) {
         console.log('  ⚠️ PMS Strategy 2 failed:', e.message);
+      }
+    }
+    
+    // Estrategia 3: Esperar un poco más y buscar de nuevo con selector parcial
+    if (!pmsClicked) {
+      try {
+        console.log('  🔍 PMS Strategy 3: Waiting longer and trying selector without btneaf class...');
+        await page.waitForTimeout(3000);
+        
+        // Intentar con selector sin la clase btneaf (puede que no esté siempre presente)
+        const btnWithoutBtneaf = await page.evaluate(() => {
+          const btn = document.querySelector('button.btn.btn-primary.system');
+          if (btn) {
+            const text = btn.textContent && btn.textContent.trim();
+            if (text === 'Property Management System') {
+              const style = window.getComputedStyle(btn);
+              const rect = btn.getBoundingClientRect();
+              if (rect.width > 0 && rect.height > 0 && 
+                  style.display !== 'none' && 
+                  style.visibility !== 'hidden' &&
+                  style.opacity !== '0' &&
+                  !btn.disabled) {
+                btn.click();
+                return true;
+              }
+            }
+          }
+          return false;
+        });
+        
+        if (btnWithoutBtneaf) {
+          pmsClicked = true;
+          console.log('  ✅ PMS button clicked (Strategy 3: without btneaf class)');
+        }
+      } catch (e) {
+        console.log('  ⚠️ PMS Strategy 3 failed:', e.message);
       }
     }
     
