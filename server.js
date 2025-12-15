@@ -412,27 +412,13 @@ app.post('/scrape-all', async (req, res) => {
   const browser = await getBrowser();
   const page = await browser.newPage();
   
-  // Configurar timeouts más cortos para evitar que se cuelgue
-  page.setDefaultNavigationTimeout(30000);
-  page.setDefaultTimeout(30000);
+  // Configurar timeouts de Puppeteer (pero sin limitar el tiempo total del request)
+  // El timeout de n8n (1000000ms = 16.6 minutos) será el que controle cuánto tiempo puede tardar
+  page.setDefaultNavigationTimeout(60000); // 1 minuto por navegación
+  page.setDefaultTimeout(60000); // 1 minuto por operación
   
-  // Timeout total de la petición HTTP (2.5 minutos para dar margen antes del timeout de n8n de 3 minutos)
-  const requestTimeout = setTimeout(() => {
-    console.error('⏰ Request timeout - closing page and returning error');
-    page.close().catch(() => {});
-    if (!res.headersSent) {
-      res.json({
-        success: true,
-        reservations: [],
-        arrivals: [],
-        departures: [],
-        inhouse: [],
-        stayview: { occupancy: [], availability: [], stats: {} },
-        timestamp: new Date().toISOString(),
-        warning: 'Request timeout: scraping took too long (>2.5 minutes)'
-      });
-    }
-  }, 150000); // 2.5 minutos
+  // NO establecer timeout de seguridad - dejar que tarde lo que necesite
+  // El timeout de n8n se encargará de cancelar si es necesario
   
   try {
     console.log('🚀 Starting COMPLETE eZee scraping...');
@@ -768,9 +754,6 @@ app.post('/scrape-all', async (req, res) => {
     
     await page.close();
     
-    // Limpiar timeout
-    clearTimeout(requestTimeout);
-    
     // Asegurar que siempre devolvemos success: true
     res.json({
       ...allData,
@@ -780,9 +763,6 @@ app.post('/scrape-all', async (req, res) => {
     
   } catch (error) {
     console.error('Complete scraping error:', error);
-    
-    // Limpiar timeout
-    clearTimeout(requestTimeout);
     
     try {
       // Verificar que la página aún existe antes de cerrarla
